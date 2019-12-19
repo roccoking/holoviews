@@ -8,7 +8,7 @@ from .element import Element
 from .layout import Layout
 from .overlay import NdOverlay, Overlay
 from .spaces import Callable, HoloMap
-from . import util
+from . import util, Dataset
 
 
 class Operation(param.ParameterizedFunction):
@@ -68,6 +68,7 @@ class Operation(param.ParameterizedFunction):
     # and processed element
     _preprocess_hooks = []
     _postprocess_hooks = []
+    _allow_extra_keywords=False
 
     @classmethod
     def search(cls, element, pattern):
@@ -118,9 +119,20 @@ class Operation(param.ParameterizedFunction):
         kwargs = {}
         for hook in self._preprocess_hooks:
             kwargs.update(hook(self, element))
+
+        element_pipeline = getattr(element, '_pipeline', None)
+
         ret = self._process(element, key)
         for hook in self._postprocess_hooks:
             ret = hook(self, ret, **kwargs)
+
+        if isinstance(ret, Dataset) and isinstance(element, Dataset):
+            ret._dataset = element.dataset.clone()
+            ret._pipeline = element_pipeline.instance(
+                operations=element_pipeline.operations + [
+                    self.instance(**self.p)
+                ],
+            )
         return ret
 
 
@@ -139,7 +151,16 @@ class Operation(param.ParameterizedFunction):
         The process_element method allows a single element to be
         operated on given an externally supplied key.
         """
-        self.p = param.ParamOverrides(self, params)
+        if hasattr(self, 'p'):
+            if self._allow_extra_keywords:
+                extras = self.p._extract_extra_keywords(params)
+                self.p._extra_keywords.update(extras)
+                params = {k: v for k, v in params.items() if k not in self.p._extra_keywords}
+            self.p.update(params)
+            self.p._check_params(params)
+        else:
+            self.p = param.ParamOverrides(self, params,
+                                          allow_extra_keywords=self._allow_extra_keywords)
         return self._apply(element, key)
 
 
@@ -150,7 +171,8 @@ class Operation(param.ParameterizedFunction):
                 params[k] = v()
             elif isinstance(v, param.Parameter) and isinstance(v.owner, param.Parameterized):
                 params[k] = getattr(v.owner, v.name)
-        self.p = param.ParamOverrides(self, params)
+        self.p = param.ParamOverrides(self, params,
+                                      allow_extra_keywords=self._allow_extra_keywords)
         if not self.p.dynamic:
             kwargs['dynamic'] = False
             if isinstance(element, HoloMap):

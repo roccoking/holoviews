@@ -134,6 +134,8 @@ class Comparison(ComparisonInterface):
         # Annotations
         cls.equality_type_funcs[VLine] =       cls.compare_vline
         cls.equality_type_funcs[HLine] =       cls.compare_hline
+        cls.equality_type_funcs[VSpan] =       cls.compare_vspan
+        cls.equality_type_funcs[HSpan] =       cls.compare_hspan
         cls.equality_type_funcs[Spline] =      cls.compare_spline
         cls.equality_type_funcs[Arrow] =       cls.compare_arrow
         cls.equality_type_funcs[Text] =        cls.compare_text
@@ -450,6 +452,14 @@ class Comparison(ComparisonInterface):
         cls.compare_annotation(el1, el2, msg=msg)
 
     @classmethod
+    def compare_vspan(cls, el1, el2, msg='VSpan'):
+        cls.compare_annotation(el1, el2, msg=msg)
+
+    @classmethod
+    def compare_hspan(cls, el1, el2, msg='HSpan'):
+        cls.compare_annotation(el1, el2, msg=msg)
+
+    @classmethod
     def compare_spline(cls, el1, el2, msg='Spline'):
         cls.compare_annotation(el1, el2, msg=msg)
 
@@ -508,9 +518,16 @@ class Comparison(ComparisonInterface):
     @classmethod
     def compare_dataset(cls, el1, el2, msg='Dataset'):
         cls.compare_dimensioned(el1, el2)
+        tabular = not (el1.interface.gridded and el2.interface.gridded)
+        dimension_data = [(d, el1.dimension_values(d, expanded=tabular),
+                           el2.dimension_values(d, expanded=tabular))
+                          for d in el1.kdims]
+        dimension_data += [(d, el1.dimension_values(d, flat=tabular),
+                            el2.dimension_values(d, flat=tabular))
+                            for d in el1.vdims]
         if el1.shape[0] != el2.shape[0]:
-            raise AssertionError("%s not of matching length." % msg)
-        dimension_data = [(d, el1[d], el2[d]) for d in el1.dimensions()]
+            raise AssertionError("%s not of matching length, %d vs. %d."
+                                 % (msg, el1.shape[0], el2.shape[0]))
         for dim, d1, d2 in dimension_data:
             if d1.dtype != d2.dtype:
                 cls.failureException("%s %s columns have different type." % (msg, dim.pprint_label)

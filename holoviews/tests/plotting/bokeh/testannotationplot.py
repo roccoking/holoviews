@@ -1,6 +1,8 @@
 import numpy as np
 
-from holoviews.element import HLine, VLine, Text, Labels, Arrow
+from holoviews.element import (
+    HLine, VLine, Text, Labels, Arrow, HSpan, VSpan, Slope
+)
 
 from .testplot import TestBokehPlot, bokeh_renderer
 
@@ -8,7 +10,7 @@ from .testplot import TestBokehPlot, bokeh_renderer
 class TestHVLinePlot(TestBokehPlot):
 
     def test_hline_invert_axes(self):
-        hline = HLine(1.1).opts(plot=dict(invert_axes=True))
+        hline = HLine(1.1).opts(invert_axes=True)
         plot = bokeh_renderer.get_plot(hline)
         span = plot.handles['glyph']
         self.assertEqual(span.dimension, 'height')
@@ -22,7 +24,7 @@ class TestHVLinePlot(TestBokehPlot):
         self.assertEqual(span.location, 1.1)
 
     def test_vline_invert_axes(self):
-        vline = VLine(1.1).opts(plot=dict(invert_axes=True))
+        vline = VLine(1.1).opts(invert_axes=True)
         plot = bokeh_renderer.get_plot(vline)
         span = plot.handles['glyph']
         self.assertEqual(span.dimension, 'width')
@@ -34,6 +36,65 @@ class TestHVLinePlot(TestBokehPlot):
         span = plot.handles['glyph']
         self.assertEqual(span.dimension, 'height')
         self.assertEqual(span.location, 1.1)
+
+
+class TestHVSpanPlot(TestBokehPlot):
+    
+    def test_hspan_invert_axes(self):
+        hspan = HSpan(1.1, 1.5).opts(invert_axes=True)
+        plot = bokeh_renderer.get_plot(hspan)
+        span = plot.handles['glyph']
+
+        self.assertEqual(span.left, 1.1)
+        self.assertEqual(span.right, 1.5)
+        self.assertEqual(span.bottom, None)
+        self.assertEqual(span.top, None)
+
+    def test_hspan_plot(self):
+        hspan = HSpan(1.1, 1.5)
+        plot = bokeh_renderer.get_plot(hspan)
+        span = plot.handles['glyph']
+        self.assertEqual(span.left, None)
+        self.assertEqual(span.right, None)
+        self.assertEqual(span.bottom, 1.1)
+        self.assertEqual(span.top, 1.5)
+
+    def test_vspan_invert_axes(self):
+        vspan = VSpan(1.1, 1.5).opts(invert_axes=True)
+        plot = bokeh_renderer.get_plot(vspan)
+        span = plot.handles['glyph']
+        self.assertEqual(span.left, None)
+        self.assertEqual(span.right, None)
+        self.assertEqual(span.bottom, 1.1)
+        self.assertEqual(span.top, 1.5)
+
+    def test_vspan_plot(self):
+        vspan = VSpan(1.1, 1.5)
+        plot = bokeh_renderer.get_plot(vspan)
+        span = plot.handles['glyph']
+        self.assertEqual(span.left, 1.1)
+        self.assertEqual(span.right, 1.5)
+        self.assertEqual(span.bottom, None)
+        self.assertEqual(span.top, None)
+
+
+
+class TestSlopePlot(TestBokehPlot):
+
+    def test_slope(self):
+        hspan = Slope(2, 10)
+        plot = bokeh_renderer.get_plot(hspan)
+        slope = plot.handles['glyph']
+        self.assertEqual(slope.gradient, 2)
+        self.assertEqual(slope.y_intercept, 10)
+
+    def test_slope_invert_axes(self):
+        hspan = Slope(2, 10).opts(invert_axes=True)
+        plot = bokeh_renderer.get_plot(hspan)
+        slope = plot.handles['glyph']
+        self.assertEqual(slope.gradient, 0.5)
+        self.assertEqual(slope.y_intercept, -5)
+        
 
 
 class TestTextPlot(TestBokehPlot):

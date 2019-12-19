@@ -98,16 +98,14 @@ class opts(param.ParameterizedFunction):
             msg = ("Positional argument signature of opts is deprecated, "
                    "use opts.defaults instead.\nFor instance, instead of "
                    "opts('Points (size=5)') use opts.defaults(opts.Points(size=5))")
-            if util.config.future_deprecations:
-                self.param.warning(msg)
+            self.param.warning(msg)
             self._linemagic(args[0])
         elif len(args) == 2:
             msg = ("Double positional argument signature of opts is deprecated, "
                    "use the .options method instead.\nFor instance, instead of "
                    "opts('Points (size=5)', points) use points.options(opts.Points(size=5))")
 
-            if util.config.future_deprecations:
-                self.param.warning(msg)
+            self.param.warning(msg)
 
             self._cellmagic(args[0], args[1])
 
@@ -604,9 +602,8 @@ class output(param.ParameterizedFunction):
                 if k not in Store.output_settings.allowed:
                     raise KeyError('Invalid keyword: %s' % k)
             if 'filename' in options:
-                if util.config.future_deprecations:
-                    self.param.warning('The filename argument of output is deprecated. '
-                                       'Use hv.save instead.')
+                self.param.warning('The filename argument of output is deprecated. '
+                                   'Use hv.save instead.')
 
             def display_fn(obj, renderer):
                 try:
@@ -631,7 +628,11 @@ def renderer(name):
     """
     try:
         if name not in Store.renderers:
+            if Store.current_backend:
+                prev_backend = Store.current_backend
             extension(name)
+            if prev_backend:
+                Store.set_current_backend(prev_backend)
         return Store.renderers[name]
     except ImportError:
         msg = ('Could not find a {name!r} renderer, available renderers are: {available}.')
@@ -752,7 +753,7 @@ def save(obj, filename, fmt='auto', backend=None, resources='cdn', **kwargs):
         filename = str(filename.absolute())
     if isinstance(filename, basestring):
         supported = [mfmt for tformats in renderer_obj.mode_formats.values()
-                     for mformats in tformats.values() for mfmt in mformats]
+                     for mfmt in tformats]
         formats = filename.split('.')
         if fmt == 'auto' and formats and formats[-1] != 'html':
             fmt = formats[-1]
@@ -878,8 +879,14 @@ class Dynamic(param.ParameterizedFunction):
                     stream.update(**{reverse.get(k, k): v for k, v in updates.items()})
             streams.append(stream)
 
-        params = {k: v for k, v in self.p.kwargs.items() if isinstance(v, param.Parameter)
-                  and isinstance(v.owner, param.Parameterized)}
+        params = {}
+        for k, v in self.p.kwargs.items():
+            if 'panel' in sys.modules:
+                from panel.widgets.base import Widget
+                if isinstance(v, Widget):
+                    v = v.param.value
+            if isinstance(v, param.Parameter) and isinstance(v.owner, param.Parameterized):
+                params[k] = v
         streams += Params.from_params(params)
 
         # Inherit dimensioned streams
@@ -900,7 +907,7 @@ class Dynamic(param.ParameterizedFunction):
                 streams.append(value)
             elif isinstance(value, FunctionType) and hasattr(value, '_dinfo'):
                 dependencies = list(value._dinfo.get('dependencies', []))
-                dependencies += list(value._dinfo.get('kwargs', {}).values())
+                dependencies += list(value._dinfo.get('kw', {}).values())
                 params = [d for d in dependencies if isinstance(d, param.Parameter)
                           and isinstance(d.owner, param.Parameterized)]
                 streams.append(Params(parameters=params, watch_only=True))
@@ -926,24 +933,29 @@ class Dynamic(param.ParameterizedFunction):
         Generate function to dynamically apply the operation.
         Wraps an existing HoloMap or DynamicMap.
         """
-        if not isinstance(map_obj, DynamicMap):
-            def dynamic_operation(*key, **kwargs):
-                kwargs = dict(util.resolve_dependent_kwargs(self.p.kwargs), **kwargs)
-                obj = map_obj[key] if isinstance(map_obj, HoloMap) else map_obj
-                return self._process(obj, key, kwargs)
-        else:
-            def dynamic_operation(*key, **kwargs):
-                kwargs = dict(util.resolve_dependent_kwargs(self.p.kwargs), **kwargs)
-                if map_obj._posarg_keys and not key:
-                    key = tuple(kwargs[k] for k in map_obj._posarg_keys)
-                return self._process(map_obj[key], key, kwargs)
+        def resolve(key, kwargs):
+            if not isinstance(map_obj, HoloMap):
+                return key, map_obj
+            elif isinstance(map_obj, DynamicMap) and map_obj._posarg_keys and not key:
+                key = tuple(kwargs[k] for k in map_obj._posarg_keys)
+            return key, map_obj[key]
+
+        def apply(element, *key, **kwargs):
+            kwargs = dict(util.resolve_dependent_kwargs(self.p.kwargs), **kwargs)
+            return self._process(element, key, kwargs)
+
+        def dynamic_operation(*key, **kwargs):
+            key, obj = resolve(key, kwargs)
+            return apply(obj, *key, **kwargs)
+
         if isinstance(self.p.operation, Operation):
             return OperationCallable(dynamic_operation, inputs=[map_obj],
                                      link_inputs=self.p.link_inputs,
                                      operation=self.p.operation)
         else:
             return Callable(dynamic_operation, inputs=[map_obj],
-                            link_inputs=self.p.link_inputs)
+                            link_inputs=self.p.link_inputs,
+                            operation=apply)
 
 
     def _make_dynamic(self, hmap, dynamic_fn, streams):
@@ -955,6 +967,6 @@ class Dynamic(param.ParameterizedFunction):
             return DynamicMap(dynamic_fn, streams=streams)
         dim_values = zip(*hmap.data.keys())
         params = util.get_param_values(hmap)
-        kdims = [d(values=list(util.unique_iterator(values))) for d, values in
+        kdims = [d.clone(values=list(util.unique_iterator(values))) for d, values in
                  zip(hmap.kdims, dim_values)]
         return DynamicMap(dynamic_fn, streams=streams, **dict(params, kdims=kdims))

@@ -21,15 +21,17 @@ try:
     from holoviews.plotting.renderer import Renderer
     from panel.widgets import DiscreteSlider, Player, FloatSlider
 except:
-    pn = None
+    pn, PlotlyRenderer = None, None
 
 
 class PlotlyRendererTest(ComparisonTestCase):
-    
+
     def setUp(self):
-        if 'plotly' not in Store.renderers and pn is not None:
+        if 'plotly' not in Store.renderers or None in (pn, PlotlyRenderer):
             raise SkipTest("Plotly and Panel required to test rendering.")
 
+        self.previous_backend = Store.current_backend
+        Store.current_backend = 'plotly'
         self.renderer = PlotlyRenderer.instance()
         self.nbcontext = Renderer.notebook_context
         self.comm_manager = Renderer.comm_manager
@@ -41,6 +43,7 @@ class PlotlyRendererTest(ComparisonTestCase):
         with param.logging_level('ERROR'):
             Renderer.notebook_context = self.nbcontext
             Renderer.comm_manager = self.comm_manager
+        Store.current_backend = self.previous_backend
 
     def test_render_static(self):
         curve = Curve([])

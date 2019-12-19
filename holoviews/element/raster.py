@@ -4,10 +4,10 @@ import numpy as np
 import colorsys
 import param
 
-from ..core import util, config
+from ..core import util, config, Dimension, Element2D, Overlay, Dataset
 from ..core.data import ImageInterface, GridInterface
 from ..core.data.interface import DataError
-from ..core import Dimension, Element2D, Overlay, Dataset
+from ..core.dimension import dimension_name
 from ..core.boundingregion import BoundingRegion, BoundingBox
 from ..core.sheetcoords import SheetCoordinateSystem, Slice
 from .chart import Curve
@@ -105,11 +105,10 @@ class Raster(Element2D):
 
     @classmethod
     def collapse_data(cls, data_list, function, kdims=None, **kwargs):
-        if util.config.future_deprecations:
-            param.main.param.warning(
-                'Raster.collapse_data is deprecated, collapsing '
-                'may now be performed through concatenation '
-                'and aggregation.')
+        param.main.param.warning(
+            'Raster.collapse_data is deprecated, collapsing '
+            'may now be performed through concatenation '
+            'and aggregation.')
         if isinstance(function, np.ufunc):
             return function.reduce(data_list)
         else:
@@ -312,8 +311,9 @@ class Image(Dataset, Raster, SheetCoordinateSystem):
             bounds = BoundingBox(points=((l, b), (r, t)))
 
         data_bounds = None
-        if self.interface is ImageInterface and not isinstance(data, np.ndarray):
+        if self.interface is ImageInterface and not isinstance(data, (np.ndarray, Image)):
             data_bounds = self.bounds.lbrt()
+
         l, b, r, t = bounds.lbrt()
         xdensity = xdensity if xdensity else util.compute_density(l, r, dim1, self._time_unit)
         ydensity = ydensity if ydensity else util.compute_density(b, t, dim2, self._time_unit)
@@ -582,15 +582,8 @@ class Image(Dataset, Raster, SheetCoordinateSystem):
         idx = self.get_dimension_index(dim)
         dimension = self.get_dimension(dim)
         if idx in [0, 1] and data_range and dimension.range == (None, None):
-            if self.interface.datatype == 'image':
-                l, b, r, t = self.bounds.lbrt()
-                return (b, t) if idx else (l, r)
-            low, high = super(Image, self).range(dim, data_range)
-            density = self.ydensity if idx else self.xdensity
-            halfd = (1./density)/2.
-            if isinstance(low, util.datetime_types):
-                halfd = np.timedelta64(int(round(halfd)), self._time_unit)
-            return (low-halfd, high+halfd)
+            l, b, r, t = self.bounds.lbrt()
+            return (b, t) if idx else (l, r)
         else:
             return super(Image, self).range(dim, data_range, dimension_range)
 
@@ -602,11 +595,10 @@ class Image(Dataset, Raster, SheetCoordinateSystem):
         are 'numpy' (for homogeneous data), 'dataframe', and
         'dictionary'.
         """
-        if config.future_deprecations:
-            self.param.warning(
-                "The table method is deprecated and should no longer "
-                "be used. Instead cast the %s to a a Table directly."
-                % type(self).__name__)
+        self.param.warning(
+            "The table method is deprecated and should no longer "
+            "be used. Instead cast the %s to a a Table directly."
+            % type(self).__name__)
         if datatype and not isinstance(datatype, list):
             datatype = [datatype]
         from ..element import Table
@@ -732,9 +724,14 @@ class RGB(Image):
             vdims = list(self.vdims)
         else:
             vdims = list(vdims) if isinstance(vdims, list) else [vdims]
-        if isinstance(data, np.ndarray):
-            if data.shape[-1] == 4 and len(vdims) == 3:
-                vdims.append(self.alpha_dimension)
+
+        alpha = self.alpha_dimension
+        if ((hasattr(data, 'shape') and data.shape[-1] == 4 and len(vdims) == 3) or
+            (isinstance(data, tuple) and isinstance(data[-1], np.ndarray) and data[-1].ndim == 3
+             and data[-1].shape[-1] == 4 and len(vdims) == 3) or
+            (isinstance(data, dict) and tuple(dimension_name(vd) for vd in vdims)+(alpha.name,) in data)):
+            # Handle all forms of packed value dimensions
+            vdims.append(alpha)
         super(RGB, self).__init__(data, kdims=kdims, vdims=vdims, **params)
 
 

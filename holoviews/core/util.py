@@ -181,7 +181,7 @@ class HashableJSON(json.JSONEncoder):
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
         if pd and isinstance(obj, (pd.Series, pd.DataFrame)):
-            return obj.to_csv().encode('utf-8')
+            return obj.to_csv(header=True).encode('utf-8')
         elif isinstance(obj, self.string_hashable):
             return str(obj)
         elif isinstance(obj, self.repr_hashable):
@@ -911,7 +911,9 @@ def find_range(values, soft_range=[]):
             values = np.concatenate([values, soft_range])
         if values.dtype.kind == 'M':
             return values.min(), values.max()
-        return np.nanmin(values), np.nanmax(values)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
+            return np.nanmin(values), np.nanmax(values)
     except:
         try:
             values = sorted(values)
@@ -1188,7 +1190,7 @@ def merge_dimensions(dimensions_list):
                 dimensions.append(d)
     dvalues = {k: list(unique_iterator(itertools.chain(*vals)))
                for k, vals in dvalues.items()}
-    return [d(values=dvalues.get(d.name, [])) for d in dimensions]
+    return [d.clone(values=dvalues.get(d.name, [])) for d in dimensions]
 
 
 def dimension_sort(odict, kdims, vdims, key_index):
@@ -1483,6 +1485,10 @@ def resolve_dependent_kwargs(kwargs):
     """
     resolved = {}
     for k, v in kwargs.items():
+        if 'panel' in sys.modules:
+            from panel.widgets.base import Widget
+            if isinstance(v, Widget):
+                v = v.param.value
         if is_param_method(v, has_deps=True):
             v = v()
         elif isinstance(v, param.Parameter) and isinstance(v.owner, param.Parameterized):
@@ -1762,14 +1768,16 @@ class ndmapping_groupby(param.ParameterizedFunction):
         multi_index = pd.MultiIndex.from_tuples(ndmapping.keys(), names=all_dims)
         df = pd.DataFrame(list(map(wrap_tuple, ndmapping.values())), index=multi_index)
 
-        kwargs = dict(dict(get_param_values(ndmapping), kdims=idims), **kwargs)
+        # TODO: Look at sort here
+        kwargs = dict(dict(get_param_values(ndmapping), kdims=idims), sort=sort, **kwargs)
         groups = ((wrap_tuple(k), group_type(OrderedDict(unpack_group(group, getter)), **kwargs))
-                   for k, group in df.groupby(level=[d.name for d in dimensions]))
+                   for k, group in df.groupby(level=[d.name for d in dimensions], sort=sort))
 
         if sort:
             selects = list(get_unique_keys(ndmapping, dimensions))
             groups = sorted(groups, key=lambda x: selects.index(x[0]))
-        return container_type(groups, kdims=dimensions)
+
+        return container_type(groups, kdims=dimensions, sort=sort)
 
     @param.parameterized.bothmethod
     def groupby_python(self_or_cls, ndmapping, dimensions, container_type,

@@ -14,12 +14,12 @@ class DimensionTest(ComparisonTestCase):
         Dimension('Test dimension', cyclic=True, type=int)
         Dimension('Test dimension', cyclic=True, type=int, unit='Twilight zones')
 
-    def test_dimension_call(self):
+    def test_dimension_clone(self):
         dim1 = Dimension('Test dimension')
-        dim2 = dim1(cyclic=True)
+        dim2 = dim1.clone(cyclic=True)
         self.assertEqual(dim2.cyclic,True)
 
-        dim3 = dim1('New test dimension', unit='scovilles')
+        dim3 = dim1.clone('New test dimension', unit='scovilles')
         self.assertEqual(dim3.name, 'New test dimension')
         self.assertEqual(dim3.unit, 'scovilles')
 
@@ -133,9 +133,9 @@ class NdIndexableMappingTest(ComparisonTestCase):
     def test_idxmapping_groupby_unsorted(self):
         data = [(('B', 2), 1), (('C', 2), 2), (('A', 1), 3)]
         grouped = NdMapping(data, sort=False, kdims=['X', 'Y']).groupby('Y')
-        self.assertEquals(grouped.keys(), [1, 2])
-        self.assertEquals(grouped.values()[0].keys(), ['A'])
-        self.assertEquals(grouped.last.keys(), ['B', 'C'])
+        self.assertEquals(grouped.keys(), [2, 1])
+        self.assertEquals(grouped.values()[0].keys(), ['B', 'C'])
+        self.assertEquals(grouped.last.keys(), ['A'])
 
     def test_idxmapping_reindex(self):
         data = [((0, 0.5), 'a'), ((1, 0.5), 'b')]

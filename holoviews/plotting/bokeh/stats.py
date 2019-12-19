@@ -8,6 +8,7 @@ import numpy as np
 
 from bokeh.models import FactorRange, Circle, VBar, HBar
 
+from .selection import BokehOverlaySelectionDisplay
 from ...core.dimension import Dimensioned
 from ...core.ndmapping import sorted_context
 from ...core.util import dimension_sanitizer, wrap_tuple, isfinite
@@ -16,7 +17,7 @@ from .chart import AreaPlot
 from .element import CompositeElementPlot, ColorbarPlot, LegendPlot
 from .path import PolygonPlot
 from .styles import fill_properties, line_properties
-from .util import decode_bytes
+from .util import bokeh_version, decode_bytes
 
 
 class DistributionPlot(AreaPlot):
@@ -32,6 +33,8 @@ class DistributionPlot(AreaPlot):
 
     filled = param.Boolean(default=True, doc="""
         Whether the bivariate contours should be filled.""")
+
+    selection_display = BokehOverlaySelectionDisplay()
 
 
 class BivariatePlot(PolygonPlot):
@@ -54,7 +57,7 @@ class BivariatePlot(PolygonPlot):
     levels = param.ClassSelector(default=10, class_=(list, int), doc="""
         A list of scalar values used to specify the contour levels.""")
 
-
+    selection_display = BokehOverlaySelectionDisplay(color_prop='cmap', is_cmap=True)
 
 
 class BoxWhiskerPlot(CompositeElementPlot, ColorbarPlot, LegendPlot):
@@ -77,6 +80,8 @@ class BoxWhiskerPlot(CompositeElementPlot, ColorbarPlot, LegendPlot):
 
     _stream_data = False # Plot does not support streaming data
 
+    selection_display = BokehOverlaySelectionDisplay()
+
     def get_extents(self, element, ranges, range_type='combined'):
         return super(BoxWhiskerPlot, self).get_extents(
             element, ranges, range_type, 'categorical', element.vdims[0]
@@ -88,7 +93,8 @@ class BoxWhiskerPlot(CompositeElementPlot, ColorbarPlot, LegendPlot):
     def _glyph_properties(self, plot, element, source, ranges, style, group=None):
         properties = dict(style, source=source)
         if self.show_legend and not element.kdims and self.overlaid:
-            properties['legend'] = element.label
+            legend_prop = 'legend_label' if bokeh_version >= '1.3.5' else 'legend'
+            properties[legend_prop] = element.label
         return properties
 
     def _apply_transforms(self, element, data, ranges, style, group=None):
@@ -257,7 +263,8 @@ class BoxWhiskerPlot(CompositeElementPlot, ColorbarPlot, LegendPlot):
 
         # Define color dimension and data
         if self.show_legend:
-            vbar_map['legend'] = 'index'
+            legend_prop = 'legend_field' if bokeh_version >= '1.3.5' else 'legend'
+            vbar_map[legend_prop] = 'index'
 
         return data, mapping, style
 
@@ -302,13 +309,15 @@ class ViolinPlot(BoxWhiskerPlot):
 
     _stat_fns = [partial(np.percentile, q=q) for q in [25, 50, 75]]
 
+    selection_display = BokehOverlaySelectionDisplay(color_prop='violin_fill_color')
+
     def _kde_data(self, el, key, **kwargs):
         vdim = el.vdims[0]
         values = el.dimension_values(vdim)
         if self.clip:
             vdim = vdim(range=self.clip)
             el = el.clone(vdims=[vdim])
-        kde = univariate_kde(el, dimension=vdim, **kwargs)
+        kde = univariate_kde(el, dimension=vdim.name, **kwargs)
         xs, ys = (kde.dimension_values(i) for i in range(2))
         mask = isfinite(ys) & (ys>0) # Mask out non-finite and zero values
         xs, ys = xs[mask], ys[mask]

@@ -306,9 +306,8 @@ class Dimension(param.Parameterized):
 
 
     def __call__(self, spec=None, **overrides):
-        if util.config.future_deprecations:
-            self.param.warning('Dimension.__call__ method has been deprecated, '
-                               'use the clone method instead.')
+        self.param.warning('Dimension.__call__ method has been deprecated, '
+                           'use the clone method instead.')
         return self.clone(spec=spec, **overrides)
 
 
@@ -486,40 +485,7 @@ class LabelledData(param.Parameterized):
         This class also has an id instance attribute, which
         may be set to associate some custom options with the object.
         """
-        from . import Dataset, DataError
         self.data = data
-
-        # Handle initializing the dataset property.
-        self._dataset = None
-        input_dataset = params.pop('dataset', None)
-        if type(self) is Dataset:
-            self._dataset = self
-        elif input_dataset is not None:
-            # Clone dimension info from input dataset with reference to new
-            # data. This way we keep the metadata for all of the dimensions.
-            try:
-                self._dataset = input_dataset.clone(data=self.data)
-            except DataError:
-                # Dataset not compatible with input data
-                pass
-        if self._dataset is None:
-            # Create a default Dataset to wrap input data
-            try:
-                kdims = list(params.get('kdims', []))
-                vdims = list(params.get('vdims', []))
-                dims = kdims + vdims
-                dataset = Dataset(
-                    self.data,
-                    kdims=dims if dims else None
-                )
-                if len(dataset.dimensions()) == 0:
-                    # No dimensions could be auto-detected in data
-                    raise DataError("No dimensions detected")
-                self._dataset = dataset
-            except DataError:
-                # Data not supported by any storage backend. leave _dataset as
-                # None
-                pass
 
         self._id = None
         self.id = id
@@ -541,10 +507,6 @@ class LabelledData(param.Parameterized):
         elif not util.label_sanitizer.allowable(self.label):
             raise ValueError("Supplied label %r contains invalid characters." %
                              self.label)
-
-    @property
-    def dataset(self):
-        return self._dataset
 
     @property
     def id(self):
@@ -1229,8 +1191,8 @@ class Dimensioned(LabelledData):
     def __unicode__(self):
         return unicode(PrettyPrinter.pprint(self))
 
-    def __call__(self, options=None, **kwargs):	
-        self.param.warning(	
+    def __call__(self, options=None, **kwargs):
+        self.param.warning(
             'Use of __call__ to set options will be deprecated '	
             'in the next major release (1.14.0). Use the equivalent .opts '
             'method instead.')	
@@ -1372,9 +1334,10 @@ class ViewableTree(AttrTree, Dimensioned):
     @classmethod
     def from_values(cls, vals):
         "Deprecated method to construct tree from list of objects"
-        if util.config.future_deprecations:
-            param.main.param.warning("%s.from_values is deprecated, the %s "
-                                     "constructor may now be used directly.")
+        name = cls.__name__        
+        param.main.param.warning("%s.from_values is deprecated, the %s "
+                                 "constructor may now be used directly."
+                                 % (name, name))
         return cls(items=cls._process_items(vals))
 
 
@@ -1485,13 +1448,30 @@ class ViewableTree(AttrTree, Dimensioned):
 
             ViewableTree(tree.relabel(group='Group').values())
         """
-        if util.config.future_deprecations:
-            self.param.warning('%s.regroup is deprecated, use relabel '
-                               'method with a group argument instead.'
-                               % type(self).__name__)
+        self.param.warning('%s.regroup is deprecated, use relabel '
+                           'method with a group argument instead.'
+                           % type(self).__name__)
         new_items = [el.relabel(group=group) for el in self.data.values()]
         return reduce(lambda x,y: x+y, new_items)
 
 
+    def relabel(self, label=None, group=None, depth=1):
+        """Clone object and apply new group and/or label.
+
+        Applies relabeling to children up to the supplied depth.
+
+        Args:
+            label (str, optional): New label to apply to returned object
+            group (str, optional): New group to apply to returned object
+            depth (int, optional): Depth to which relabel will be applied
+                If applied to container allows applying relabeling to
+                contained objects up to the specified depth
+
+        Returns:
+            Returns relabelled object
+        """
+        return super(ViewableTree, self).relabel(label, group, depth)
+
+    
     def __len__(self):
         return len(self.data)

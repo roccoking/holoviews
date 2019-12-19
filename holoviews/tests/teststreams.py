@@ -5,6 +5,7 @@ from collections import defaultdict
 from unittest import SkipTest
 
 import param
+
 from holoviews.core.spaces import DynamicMap
 from holoviews.core.util import LooseVersion, pd
 from holoviews.element import Points, Scatter, Curve, Histogram
@@ -297,7 +298,7 @@ class TestParamsStream(LoggingComparisonTestCase):
         def subscriber(**kwargs):
             values.append(kwargs)
             self.assertEqual(set(stream.hashkey),
-                             {'action', '_memoize_key'})
+                             {'%s action' % inner.name, '_memoize_key'})
 
         stream.add_subscriber(subscriber)
         inner.action(inner)
@@ -311,8 +312,9 @@ class TestParamsStream(LoggingComparisonTestCase):
         values = []
         def subscriber(**kwargs):
             values.append(kwargs)
-            self.assertEqual(set(stream.hashkey),
-                             {'action', 'x', '_memoize_key'})
+            self.assertEqual(
+                set(stream.hashkey),
+                {'%s action' % inner.name, '%s x' % inner.name, '_memoize_key'})
 
         stream.add_subscriber(subscriber)
         inner.action(inner)
@@ -485,7 +487,7 @@ class TestParamMethodStream(ComparisonTestCase):
         def subscriber(**kwargs):
             values.append(kwargs)
             self.assertEqual(set(stream.hashkey),
-                             {'action', '_memoize_key'})
+                             {'%s action' % inner.name, '_memoize_key'})
 
         stream.add_subscriber(subscriber)
         inner.action(inner)
@@ -503,8 +505,9 @@ class TestParamMethodStream(ComparisonTestCase):
         values = []
         def subscriber(**kwargs):
             values.append(kwargs)
-            self.assertEqual(set(stream.hashkey),
-                             {'action', 'x', '_memoize_key'})
+            self.assertEqual(
+                set(stream.hashkey),
+                {'%s action' % inner.name, '%s x' % inner.name, '_memoize_key'})
 
         stream.add_subscriber(subscriber)
         stream.add_subscriber(lambda **kwargs: dmap[()])
@@ -620,7 +623,8 @@ class TestSubscribers(ComparisonTestCase):
 class TestStreamSource(ComparisonTestCase):
 
     def tearDown(self):
-        Stream.registry = defaultdict(list)
+        with param.logging_level('ERROR'):
+            Stream.registry = defaultdict(list)
 
     def test_source_empty_element(self):
         points = Points([])

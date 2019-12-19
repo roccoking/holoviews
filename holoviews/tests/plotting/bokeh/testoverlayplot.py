@@ -287,4 +287,3 @@ class TestLegends(TestBokehPlot):
         plot = bokeh_renderer.get_plot(dmap)
         selected.event(items=2)
         self.assertEqual(len([r for r in plot.state.renderers if r.visible]), 2)
-

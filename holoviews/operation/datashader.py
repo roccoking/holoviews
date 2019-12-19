@@ -11,6 +11,7 @@ import datashader as ds
 import datashader.reductions as rd
 import datashader.transfer_functions as tf
 import dask.dataframe as dd
+
 from param.parameterized import bothmethod
 
 try:
@@ -20,13 +21,14 @@ except:
     hammer_bundle, connect_edges = object, object
 
 from ..core import (Operation, Element, Dimension, NdOverlay,
-                    CompositeOverlay, Dataset, Overlay)
-from ..core.data import PandasInterface, XArrayInterface
+                    CompositeOverlay, Dataset, Overlay, OrderedDict)
+from ..core.data import PandasInterface, XArrayInterface, DaskInterface
 from ..core.util import (
     LooseVersion, basestring, cftime_types, cftime_to_timestamp,
-    datetime_types, dt_to_int, get_param_values)
+    datetime_types, dt_to_int, get_param_values, max_range)
 from ..element import (Image, Path, Curve, RGB, Graph, TriMesh,
-                       QuadMesh, Contours, Spikes, Area, Spread)
+                       QuadMesh, Contours, Spikes, Area, Spread,
+                       Segments, Scatter, Points, Polygons)
 from ..streams import RangeXY, PlotSize
 
 ds_version = LooseVersion(ds.__version__)
@@ -45,6 +47,7 @@ class LinkableOperation(Operation):
         interactive, e.g. when trying to display an interactive plot a
         second time.""")
 
+    _allow_extra_keywords=True
 
 class ResamplingOperation(LinkableOperation):
     """
@@ -70,11 +73,11 @@ class ResamplingOperation(LinkableOperation):
     width = param.Integer(default=400, doc="""
        The width of the output image in pixels.""")
 
-    x_range  = param.NumericTuple(default=None, length=2, doc="""
+    x_range  = param.Tuple(default=None, length=2, doc="""
        The x_range as a tuple of min and max x-value. Auto-ranges
        if set to None.""")
 
-    y_range  = param.NumericTuple(default=None, length=2, doc="""
+    y_range  = param.Tuple(default=None, length=2, doc="""
        The y-axis range as a tuple of min and max y value. Auto-ranges
        if set to None.""")
 
@@ -108,34 +111,44 @@ class ResamplingOperation(LinkableOperation):
 
     @bothmethod
     def instance(self_or_cls,**params):
-        inst = super(ResamplingOperation, self_or_cls).instance(**params)
+        filtered = {k:v for k,v in params.items() if k in self_or_cls.param}
+        inst = super(ResamplingOperation, self_or_cls).instance(**filtered)
         inst._precomputed = {}
         return inst
 
     def _get_sampling(self, element, x, y, ndim=2, default=None):
         target = self.p.target
+        if not isinstance(x, list) and x is not None:
+            x = [x]
+        if not isinstance(y, list) and y is not None:
+            y = [y]
 
         if target:
-            x_range, y_range = target.range(x), target.range(y)
+            x0, y0, x1, y1 = target.bounds.lbrt()
+            x_range, y_range = (x0, x1), (y0, y1)
             height, width = target.dimension_values(2, flat=False).shape
         else:
             if x is None:
                 x_range = self.p.x_range or (-0.5, 0.5)
             elif self.p.expand or not self.p.x_range:
-                x_range = self.p.x_range or element.range(x)
+                x_range = self.p.x_range or max_range([element.range(xd) for xd in x])
             else:
                 x0, x1 = self.p.x_range
-                ex0, ex1 = element.range(x)
+                ex0, ex1 = max_range([element.range(xd) for xd in x])
                 x_range = (np.min([np.max([x0, ex0]), ex1]),
                            np.max([np.min([x1, ex1]), ex0]))
 
             if (y is None and ndim == 2):
                 y_range = self.p.y_range or default or (-0.5, 0.5)
             elif self.p.expand or not self.p.y_range:
-                y_range = self.p.y_range or (element.range(y) if default is None else default)
+                y_range = self.p.y_range or (max_range([element.range(yd) for yd in y])
+                                             if default is None else default)
             else:
                 y0, y1 = self.p.y_range
-                ey0, ey1 = element.range(y) if default is None else default
+                if default is None:
+                    ey0, ey1 = max_range([element.range(yd) for yd in y])
+                else:
+                    ey0, ey1 = default
                 y_range = (np.min([np.max([y0, ey0]), ey1]),
                            np.max([np.min([y1, ey1]), ey0]))
             width, height = self.p.width, self.p.height
@@ -147,7 +160,7 @@ class ResamplingOperation(LinkableOperation):
             xtype = 'datetime'
         elif not np.isfinite(xstart) and not np.isfinite(xend):
             xstart, xend = 0, 0
-            if element.get_dimension_type(x) in datetime_types:
+            if x and element.get_dimension_type(x[0]) in datetime_types:
                 xtype = 'datetime'
 
         ytype = 'numeric'
@@ -156,7 +169,7 @@ class ResamplingOperation(LinkableOperation):
             ytype = 'datetime'
         elif not np.isfinite(ystart) and not np.isfinite(yend):
             ystart, yend = 0, 0
-            if element.get_dimension_type(y) in datetime_types:
+            if y and element.get_dimension_type(y[0]) in datetime_types:
                 ytype = 'datetime'
 
         # Compute highest allowed sampling density
@@ -223,8 +236,8 @@ class AggregationOperation(ResamplingOperation):
         if isinstance(agg, basestring):
             if agg not in self._agg_methods:
                 agg_methods = sorted(self._agg_methods)
-                raise ValueError('Aggregation method %r is not known; '
-                                 'aggregator must be one of: %r' %
+                raise ValueError("Aggregation method '%r' is not known; "
+                                 "aggregator must be one of: %r" %
                                  (agg, agg_methods))
             agg = self._agg_methods[agg]()
 
@@ -241,10 +254,10 @@ class AggregationOperation(ResamplingOperation):
             elif isinstance(element, NdOverlay):
                 field = element.kdims[0].name
             else:
-                raise ValueError('Could not determine dimension to apply '
-                                 '%s operation to. Declare the dimension '
-                                 'to aggregate as part of the datashader '
-                                 'aggregator.' % type(self).__name__)
+                raise ValueError("Could not determine dimension to apply "
+                                 "'%s' operation to. Declare the dimension "
+                                 "to aggregate as part of the datashader "
+                                 "aggregator." % type(self).__name__)
             agg = type(agg)(field)
         return agg
 
@@ -272,11 +285,11 @@ class AggregationOperation(ResamplingOperation):
         if column:
             dims = [d for d in element.dimensions('ranges') if d == column]
             if not dims:
-                raise ValueError("Aggregation column %s not found on %s element. "
+                raise ValueError("Aggregation column '%s' not found on '%s' element. "
                                  "Ensure the aggregator references an existing "
                                  "dimension." % (column,element))
             name = '%s Count' % column if isinstance(agg_fn, ds.count_cat) else column
-            vdims = [dims[0](name)]
+            vdims = [dims[0].clone(name)]
         else:
             vdims = Dimension('Count')
         params['vdims'] = vdims
@@ -409,7 +422,7 @@ class aggregate(AggregationOperation):
 
         if x is None or y is None or width == 0 or height == 0:
             return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
-        elif not len(data):
+        elif not getattr(data, 'interface', None) is DaskInterface and not len(data):
             empty_val = 0 if isinstance(agg_fn, ds.count) else np.NaN
             xarray = xr.DataArray(np.full((height, width), empty_val),
                                   dims=[y.name, x.name], coords={x.name: xs, y.name: ys})
@@ -620,14 +633,24 @@ class spread_aggregate(area_aggregate):
 class spikes_aggregate(AggregationOperation):
     """
     Aggregates Spikes elements by drawing individual line segments
-    over the entire y_range if no value dimension is defined and 
+    over the entire y_range if no value dimension is defined and
     between zero and the y-value if one is defined.
     """
+    spike_length = param.Number(default=None, allow_None=True, doc="""
+      If numeric, specifies the length of each spike, overriding the
+      vdims values (if present).""")
+
+    offset = param.Number(default=0., doc="""
+      The offset of the lower end of each spike.""")
+
     def _process(self, element, key=None):
         agg_fn = self._get_aggregator(element)
+        x, y = element.kdims[0], None
 
-        if element.vdims:
-            x, y = element.dimensions()
+        spike_length = 0.5 if self.p.spike_length is None else self.p.spike_length
+        if element.vdims and self.p.spike_length is None:
+            x, y = element.dimensions()[:2]
+            rename_dict = {'x': x.name, 'y':y.name}
             if not self.p.y_range:
                 y0, y1 = element.range(1)
                 if y0 >= 0:
@@ -639,21 +662,24 @@ class spikes_aggregate(AggregationOperation):
             else:
                 default = None
         else:
-            x, y = element.kdims[0], None
-            default = (0, 1)
+             x, y = element.kdims[0], None
+             default = (float(self.p.offset),
+                        float(self.p.offset + spike_length))
+             rename_dict = {'x': x.name}
         info = self._get_sampling(element, x, y, ndim=1, default=default)
         (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
         ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
 
+        value_cols = [] if agg_fn.column is None else [agg_fn.column]
         if y is None:
-            df = element.dframe([x])
-            y = 'y'
-            df['y0'] = y_range[0]
-            df['y1'] = y_range[1]
+            df = element.dframe([x]+value_cols).copy()
+            y = Dimension('y')
+            df['y0']  = float(self.p.offset)
+            df['y1']  = float(self.p.offset + spike_length)
             yagg = ['y0', 'y1']
-            height = 1
+            if not self.p.expand: height = 1
         else:
-            df = element.dframe([x, y])
+            df = element.dframe([x, y]+value_cols).copy()
             df['y0'] = np.array(0, df.dtypes[y.name])
             yagg = ['y0', y.name]
         if xtype == 'datetime':
@@ -673,9 +699,55 @@ class spikes_aggregate(AggregationOperation):
         cvs = ds.Canvas(plot_width=width, plot_height=height,
                         x_range=x_range, y_range=y_range)
 
-        agg = cvs.line(df, x.name, yagg, agg_fn, axis=1)
+        agg = cvs.line(df, x.name, yagg, agg_fn, axis=1).rename(rename_dict)
         if xtype == "datetime":
             agg[x.name] = (agg[x.name]/1e3).astype('datetime64[us]')
+
+        return self.p.element_type(agg, **params)
+
+
+class segments_aggregate(AggregationOperation):
+    """
+    Aggregates Segments elements.
+    """
+
+    def _process(self, element, key=None):
+        agg_fn = self._get_aggregator(element)
+        x0d, y0d, x1d, y1d = element.kdims
+        info = self._get_sampling(element, [x0d, x1d], [y0d, y1d], ndim=1)
+        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
+        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+
+        df = element.interface.as_dframe(element)
+        if xtype == 'datetime':
+            df[x0d.name] = df[x0d.name].astype('datetime64[us]').astype('int64')
+            df[x1d.name] = df[x1d.name].astype('datetime64[us]').astype('int64')
+        if ytype == 'datetime':
+            df[y0d.name] = df[y0d.name].astype('datetime64[us]').astype('int64')
+            df[y1d.name] = df[y1d.name].astype('datetime64[us]').astype('int64')
+
+        if isinstance(agg_fn, (ds.count, ds.any)):
+            vdim = type(agg_fn).__name__
+        else:
+            vdim = element.get_dimension(agg_fn.column)
+
+        params = dict(get_param_values(element), kdims=[x0d, y0d], vdims=vdim,
+                      datatype=['xarray'], bounds=(x0, y0, x1, y1))
+
+        if width == 0 or height == 0:
+            return self._empty_agg(element, x0d, y0d, width, height, xs, ys, agg_fn, **params)
+
+        cvs = ds.Canvas(plot_width=width, plot_height=height,
+                        x_range=x_range, y_range=y_range)
+
+        agg = cvs.line(df, [x0d.name, x1d.name], [y0d.name, y1d.name], agg_fn, axis=1)
+        xdim, ydim = list(agg.dims)[:2][::-1]
+        if xtype == "datetime":
+            agg[xdim] = (agg[xdim]/1e3).astype('datetime64[us]')
+        if ytype == "datetime":
+            agg[ydim] = (agg[ydim]/1e3).astype('datetime64[us]')
+
+        params['kdims'] = [xdim, ydim]
 
         return self.p.element_type(agg, **params)
 
@@ -773,12 +845,12 @@ class regrid(AggregationOperation):
             if isinstance(y0, datetime_types):
                 y0, y1 = dt_to_int(y0, 'ns'), dt_to_int(y1, 'ns')
             exspan, eyspan = (x1-x0), (y1-y0)
-            if np.isfinite(exspan) and exspan > 0:
-                width = min([int((xspan/exspan) * len(coords[0])), width])
+            if np.isfinite(exspan) and exspan > 0 and xspan > 0:
+                width = max([min([int((xspan/exspan) * len(coords[0])), width]), 1])
             else:
                 width = 0
-            if np.isfinite(eyspan) and eyspan > 0:
-                height = min([int((yspan/eyspan) * len(coords[1])), height])
+            if np.isfinite(eyspan) and eyspan > 0 and yspan > 0:
+                height = max([min([int((yspan/eyspan) * len(coords[1])), height]), 1])
             else:
                 height = 0
             xunit = float(xspan)/width if width else 0
@@ -791,8 +863,10 @@ class regrid(AggregationOperation):
 
         params = dict(bounds=(x0, y0, x1, y1))
         if width == 0 or height == 0:
-            if width == 0: params['xdensity'] = 1
-            if height == 0: params['ydensity'] = 1
+            if width == 0:
+                params['xdensity'] = 1
+            if height == 0:
+                params['ydensity'] = 1
             return element.clone((xs, ys, np.zeros((height, width))), **params)
 
         cvs = ds.Canvas(plot_width=width, plot_height=height,
@@ -961,68 +1035,48 @@ class quadmesh_rasterize(trimesh_rasterize):
     """
 
     def _precompute(self, element, agg):
-        return super(quadmesh_rasterize, self)._precompute(element.trimesh(), agg)
-
-
-
-class rasterize(AggregationOperation):
-    """
-    Rasterize is a high-level operation that will rasterize any
-    Element or combination of Elements, aggregating them with the supplied
-    aggregator and interpolation method.
-
-    The default aggregation method depends on the type of Element but
-    usually defaults to the count of samples in each bin. Other
-    aggregators can be supplied implementing mean, max, min and other
-    reduction operations.
-
-    The bins of the aggregate are defined by the width and height and
-    the x_range and y_range. If x_sampling or y_sampling are supplied
-    the operation will ensure that a bin is no smaller than the minimum
-    sampling distance by reducing the width and height when zoomed in
-    beyond the minimum sampling distance.
-
-    By default, the PlotSize and RangeXY streams are applied when this
-    operation is used dynamically, which means that the width, height,
-    x_range and y_range will automatically be set to match the inner
-    dimensions of the linked plot and the ranges of the axes.
-    """
-
-    aggregator = param.ClassSelector(class_=(ds.reductions.Reduction, basestring),
-                                     default=None)
-
-    interpolation = param.ObjectSelector(
-        default='bilinear', objects=['linear', 'nearest', 'bilinear', None, False], doc="""
-        The interpolation method to apply during rasterization.
-        Defaults to linear interpolation and None and False are aliases
-        of each other.""")
-
-    _transforms = [(Image, regrid),
-                   (TriMesh, trimesh_rasterize),
-                   (QuadMesh, quadmesh_rasterize),
-                   (lambda x: (isinstance(x, NdOverlay) and
-                               issubclass(x.type, Dataset)
-                               and not issubclass(x.type, Image)),
-                    aggregate),
-                   (Spikes, spikes_aggregate),
-                   (Area, area_aggregate),
-                   (Spread, spread_aggregate),
-                   (Contours, contours_rasterize),
-                   (lambda x: (isinstance(x, Dataset) and
-                               (not isinstance(x, Image))),
-                    aggregate)]
+        if ds_version <= '0.7.0':
+            return super(quadmesh_rasterize, self)._precompute(element.trimesh(), agg)
 
     def _process(self, element, key=None):
-        for predicate, transform in self._transforms:
-            op_params = dict({k: v for k, v in self.p.items()
-                              if k in transform.param
-                              and not (v is None and k == 'aggregator')},
-                             dynamic=False)
-            op = transform.instance(**op_params)
-            op._precomputed = self._precomputed
-            element = element.map(op, predicate)
-            self._precomputed = op._precomputed
-        return element
+        if ds_version <= '0.7.0':
+            return super(quadmesh_rasterize, self)._process(element, key)
+
+        if element.interface.datatype != 'xarray':
+            element = element.clone(datatype=['xarray'])
+        data = element.data
+
+        x, y = element.kdims
+        agg_fn = self._get_aggregator(element)
+        info = self._get_sampling(element, x, y)
+        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
+        if xtype == 'datetime':
+            data[x.name] = data[x.name].astype('datetime64[us]').astype('int64')
+        if ytype == 'datetime':
+            data[y.name] = data[y.name].astype('datetime64[us]').astype('int64')
+
+        # Compute bounds (converting datetimes)
+        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(
+            x_range, y_range, xs, ys, xtype, ytype
+        )
+        params = dict(get_param_values(element), datatype=['xarray'],
+                      bounds=(x0, y0, x1, y1))
+
+        if width == 0 or height == 0:
+            return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
+
+        cvs = ds.Canvas(plot_width=width, plot_height=height,
+                        x_range=x_range, y_range=y_range)
+
+        vdim = getattr(agg_fn, 'column', element.vdims[0].name)
+        agg = cvs.quadmesh(data[vdim], x.name, y.name, agg_fn)
+        xdim, ydim = list(agg.dims)[:2][::-1]
+        if xtype == "datetime":
+            agg[xdim] = (agg[xdim]/1e3).astype('datetime64[us]')
+        if ytype == "datetime":
+            agg[ydim] = (agg[ydim]/1e3).astype('datetime64[us]')
+
+        return Image(agg, **params)
 
 
 
@@ -1103,6 +1157,16 @@ class shade(LinkableOperation):
 
 
     @classmethod
+    def uint32_to_uint8_xr(cls, img):
+        """
+        Cast uint32 xarray DataArray to 4 uint8 channels.
+        """
+        new_array = img.values.view(dtype=np.uint8).reshape(img.shape + (4,))
+        coords = OrderedDict(list(img.coords.items())+[('band', [0, 1, 2, 3])])
+        return xr.DataArray(new_array, coords=coords, dims=img.dims+('band',))
+
+
+    @classmethod
     def rgb2hex(cls, rgb):
         """
         Convert RGB(A) tuple to hex.
@@ -1176,10 +1240,6 @@ class shade(LinkableOperation):
         elif ds_version > '0.5.0' and self.p.normalization != 'eq_hist':
             shade_opts['span'] = element.range(vdim)
 
-        for d in kdims:
-            if array[d.name].dtype.kind == 'M':
-                array[d.name] = array[d.name].astype('datetime64[us]').astype('int64')
-
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', r'invalid value encountered in true_divide')
             if np.isnan(array.data).all():
@@ -1191,7 +1251,143 @@ class shade(LinkableOperation):
         params = dict(get_param_values(element), kdims=kdims,
                       bounds=bounds, vdims=RGB.vdims[:],
                       xdensity=xdensity, ydensity=ydensity)
-        return RGB(self.uint32_to_uint8(img.data), **params)
+        return RGB(self.uint32_to_uint8_xr(img), **params)
+
+
+
+class geometry_rasterize(AggregationOperation):
+    """
+    Rasterizes geometries by converting them to spatialpandas.
+    """
+
+    aggregator = param.ClassSelector(default=ds.mean(),
+                                     class_=(ds.reductions.Reduction, basestring))
+
+    def _get_aggregator(self, element, add_field=True):
+        agg = self.p.aggregator
+        if not element.vdims and agg.column is None and not isinstance(agg, (rd.count, rd.any)):
+            return ds.count()
+        return super(geometry_rasterize, self)._get_aggregator(element, add_field)
+
+    def _process(self, element, key=None):
+        agg_fn = self._get_aggregator(element)
+        xdim, ydim = element.kdims
+        info = self._get_sampling(element, xdim, ydim)
+        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
+        x0, x1 = x_range
+        y0, y1 = y_range
+
+        params = self._get_agg_params(element, xdim, ydim, agg_fn, (x0, y0, x1, y1))
+
+        if width == 0 or height == 0:
+            return self._empty_agg(element, xdim, ydim, width, height, xs, ys, agg_fn, **params)
+
+        cvs = ds.Canvas(plot_width=width, plot_height=height,
+                        x_range=x_range, y_range=y_range)
+
+        if element.interface.datatype != 'spatialpandas':
+            element = element.clone(datatype=['spatialpandas'])
+        data = element.data
+        if isinstance(agg_fn, ds.count_cat):
+            data[agg_fn.column] = data[agg_fn.column].astype('category')
+        col = element.interface.geo_column(element.data)
+
+        if isinstance(element, Polygons):
+            agg = cvs.polygons(data, geometry=col, agg=agg_fn)
+        elif isinstance(element, Path):
+            agg = cvs.line(data, geometry=col, agg=agg_fn)
+        elif isinstance(element, Points):
+            agg = cvs.points(data, geometry=col, agg=agg_fn)
+
+        if agg.ndim == 2:
+            return self.p.element_type(agg, **params)
+        else:
+            layers = {}
+            for c in agg.coords[agg_fn.column].data:
+                cagg = agg.sel(**{agg_fn.column: c})
+                layers[c] = self.p.element_type(cagg, **params)
+            return NdOverlay(layers, kdims=[element.get_dimension(agg_fn.column)])
+
+
+
+class rasterize(AggregationOperation):
+    """
+    Rasterize is a high-level operation that will rasterize any
+    Element or combination of Elements, aggregating them with the supplied
+    aggregator and interpolation method.
+
+    The default aggregation method depends on the type of Element but
+    usually defaults to the count of samples in each bin. Other
+    aggregators can be supplied implementing mean, max, min and other
+    reduction operations.
+
+    The bins of the aggregate are defined by the width and height and
+    the x_range and y_range. If x_sampling or y_sampling are supplied
+    the operation will ensure that a bin is no smaller than the minimum
+    sampling distance by reducing the width and height when zoomed in
+    beyond the minimum sampling distance.
+
+    By default, the PlotSize and RangeXY streams are applied when this
+    operation is used dynamically, which means that the width, height,
+    x_range and y_range will automatically be set to match the inner
+    dimensions of the linked plot and the ranges of the axes.
+    """
+
+    aggregator = param.ClassSelector(class_=(ds.reductions.Reduction, basestring),
+                                     default=None)
+
+    interpolation = param.ObjectSelector(
+        default='bilinear', objects=['linear', 'nearest', 'bilinear', None, False], doc="""
+        The interpolation method to apply during rasterization.
+        Defaults to linear interpolation and None and False are aliases
+        of each other.""")
+
+    _transforms = [(Image, regrid),
+                   (Polygons, geometry_rasterize),
+                   (lambda x: (isinstance(x, Path) and
+                               x.interface.datatype == 'spatialpandas'),
+                    geometry_rasterize),
+                   (TriMesh, trimesh_rasterize),
+                   (QuadMesh, quadmesh_rasterize),
+                   (lambda x: (isinstance(x, NdOverlay) and
+                               issubclass(x.type, (Scatter, Points, Curve, Path))),
+                    aggregate),
+                   (Spikes, spikes_aggregate),
+                   (Area, area_aggregate),
+                   (Spread, spread_aggregate),
+                   (Segments, segments_aggregate),
+                   (Contours, contours_rasterize),
+                   (Graph, aggregate),
+                   (Scatter, aggregate),
+                   (Points, aggregate),
+                   (Curve, aggregate),
+                   (Path, aggregate),
+                   (type(None), shade) # To handles parameters of datashade 
+    ]
+
+    def _process(self, element, key=None):
+        # Potentially needs traverse to find element types first?
+        all_allowed_kws = set()
+        all_supplied_kws = set()
+        for predicate, transform in self._transforms:
+            op_params = dict({k: v for k, v in self.p.items()
+                              if not (v is None and k == 'aggregator')},
+                             dynamic=False)
+            extended_kws = dict(op_params, **self.p.extra_keywords())
+            all_supplied_kws |= set(extended_kws)
+            all_allowed_kws |= set(transform.param)
+            # Collect union set of consumed. Versus union of available.
+            op = transform.instance(**{k:v for k,v in extended_kws.items()
+                                       if k in transform.param})
+            op._precomputed = self._precomputed
+            element = element.map(op, predicate)
+            self._precomputed = op._precomputed
+
+        unused_params = list(all_supplied_kws - all_allowed_kws)
+        if unused_params:
+            self.warning('Parameters %s not consumed by any element rasterizer.'
+                         % ', '.join(unused_params))
+        return element
 
 
 
@@ -1243,8 +1439,8 @@ class stack(Operation):
         imgs = []
         for rgb in overlay:
             if not isinstance(rgb, RGB):
-                raise TypeError('stack operation expect RGB type elements, '
-                                'not %s name.' % type(rgb).__name__)
+                raise TypeError("The stack operation expects elements of type RGB, "
+                                "not '%s'." % type(rgb).__name__)
             rgb = rgb.rgb
             dims = [kd.name for kd in rgb.kdims][::-1]
             coords = {kd.name: rgb.dimension_values(kd, False)
@@ -1254,7 +1450,7 @@ class stack(Operation):
         try:
             imgs = xr.align(*imgs, join='exact')
         except ValueError:
-            raise ValueError('RGB inputs to stack operation could not be aligned, '
+            raise ValueError('RGB inputs to the stack operation could not be aligned; '
                              'ensure they share the same grid sampling.')
 
         stacked = tf.stack(*imgs, how=self.p.compositor)

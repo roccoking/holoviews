@@ -5,13 +5,86 @@ from __future__ import absolute_import, unicode_literals
 
 from collections import OrderedDict
 from types import FunctionType
+import copy
 
 import param
+from param.parameterized import add_metaclass
 
 from . import util
 from .pprint import PrettyPrinter
 
 
+class AccessorPipelineMeta(type):
+    def __new__(mcs, classname, bases, classdict):
+        if '__call__' in classdict:
+            classdict['__call__'] = mcs.pipelined(classdict['__call__'])
+
+        inst = type.__new__(mcs, classname, bases, classdict)
+        return inst
+
+    @classmethod
+    def pipelined(mcs, __call__):
+        def pipelined_call(*args, **kwargs):
+            from ..operation.element import method as method_op, factory
+            from .data import Dataset, MultiDimensionalMapping
+            inst = args[0]
+
+            if not hasattr(inst._obj, '_pipeline'):
+                # Wrapped object doesn't support the pipeline property
+                return __call__(*args, **kwargs)
+
+            inst_pipeline = copy.copy(inst._obj. _pipeline)
+            in_method = inst._obj._in_method
+            if not in_method:
+                inst._obj._in_method = True
+
+            try:
+                result = __call__(*args, **kwargs)
+
+                if not in_method:
+                    init_op = factory.instance(
+                        output_type=type(inst),
+                        kwargs={'mode': getattr(inst, 'mode', None)},
+                    )
+                    call_op = method_op.instance(
+                        input_type=type(inst),
+                        method_name='__call__',
+                        args=list(args[1:]),
+                        kwargs=kwargs,
+                    )
+
+                    if isinstance(result, Dataset):
+                        result._pipeline = inst_pipeline.instance(
+                            operations=inst_pipeline.operations + [
+                                init_op, call_op
+                            ],
+                            output_type=type(result),
+                        )
+                    elif isinstance(result, MultiDimensionalMapping):
+                        for key, element in result.items():
+                            getitem_op = method_op.instance(
+                                input_type=type(result),
+                                method_name='__getitem__',
+                                args=[key],
+                            )
+                            element._pipeline = inst_pipeline.instance(
+                                operations=inst_pipeline.operations + [
+                                    init_op, call_op, getitem_op
+                                ],
+                                output_type=type(result),
+                            )
+            finally:
+                if not in_method:
+                    inst._obj._in_method = False
+
+            return result
+
+        pipelined_call.__doc__ = __call__.__doc__
+
+        return pipelined_call
+
+
+@add_metaclass(AccessorPipelineMeta)
 class Apply(object):
     """
     Utility to apply a function or operation to all viewable elements
@@ -65,6 +138,8 @@ class Apply(object):
                                  'and setting dynamic=False is only '
                                  'possible if key dimensions define '
                                  'a discrete parameter space.')
+            if not len(samples):
+                return self._obj[samples]
             return HoloMap(self._obj[samples]).apply(
                 function, streams, link_inputs, dynamic, **kwargs)
 
@@ -81,7 +156,7 @@ class Apply(object):
                                          method_name)
                 return method(*args, **kwargs)
 
-        applies = isinstance(self._obj, (ViewableElement, HoloMap))
+        applies = isinstance(self._obj, ViewableElement)
         params = {p: val for p, val in kwargs.items()
                   if isinstance(val, param.Parameter)
                   and isinstance(val.owner, param.Parameterized)}
@@ -92,11 +167,13 @@ class Apply(object):
         )
 
         if dynamic is None:
-            dynamic = (bool(streams) or isinstance(self._obj, DynamicMap) or
-                       util.is_param_method(function, has_deps=True) or
-                       params or dependent_kws)
+            is_dynamic = (bool(streams) or isinstance(self._obj, DynamicMap) or
+                          util.is_param_method(function, has_deps=True) or
+                          params or dependent_kws)
+        else:
+            is_dynamic = dynamic
 
-        if applies and dynamic:
+        if (applies or isinstance(self._obj, HoloMap)) and is_dynamic:
             return Dynamic(self._obj, operation=function, streams=streams,
                            kwargs=kwargs, link_inputs=link_inputs)
         elif applies:
@@ -113,7 +190,7 @@ class Apply(object):
                     mapped.append((k, new_val))
             return self._obj.clone(mapped, link=link_inputs)
 
-        
+
     def aggregate(self, dimensions=None, function=None, spreadfn=None, **kwargs):
         """Applies a aggregate function to all ViewableElements.
 
@@ -150,7 +227,7 @@ class Apply(object):
         return self.__call__('select', **kwargs)
 
 
-
+@add_metaclass(AccessorPipelineMeta)
 class Redim(object):
     """
     Utility that supports re-dimensioning any HoloViews object via the
@@ -177,7 +254,7 @@ class Redim(object):
             list: List of dimensions with replacements applied
         """
         from .dimension import Dimension
-        
+
         replaced = []
         for d in dimensions:
             if d.name in overrides:
@@ -305,7 +382,7 @@ class Redim(object):
         return self._redim('values', specs, **ranges)
 
 
-
+@add_metaclass(AccessorPipelineMeta)
 class Opts(object):
 
     def __init__(self, obj, mode=None):
@@ -448,7 +525,14 @@ class Opts(object):
 
 
     def _base_opts(self, *args, **kwargs):
-        apply_groups, options, new_kwargs = util.deprecated_opts_signature(args, kwargs)
+        from .options import Options
+
+        new_args = []
+        for arg in args:
+            if isinstance(arg, Options) and arg.key is None:
+                arg = arg(key=type(self._obj).__name__)
+            new_args.append(arg)
+        apply_groups, options, new_kwargs = util.deprecated_opts_signature(new_args, kwargs)
 
         # By default do not clone in .opts method
         clone = kwargs.get('clone', None)
@@ -459,4 +543,4 @@ class Opts(object):
             return opts.apply_groups(self._obj, **dict(kwargs, **new_kwargs))
 
         kwargs['clone'] = False if clone is None else clone
-        return self._obj.options(*args, **kwargs)
+        return self._obj.options(*new_args, **kwargs)

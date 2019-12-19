@@ -1,11 +1,9 @@
 import datetime as dt
-from unittest import SkipTest
 
 import numpy as np
 from holoviews.core import NdOverlay, HoloMap
 from holoviews.core.options import Cycle
 from holoviews.element import Path, Polygons, Contours
-from holoviews.plotting.bokeh.util import bokeh_version
 from holoviews.streams import PolyDraw
 
 from .testplot import TestBokehPlot, bokeh_renderer
@@ -55,13 +53,13 @@ class TestPathPlot(TestBokehPlot):
                         kdims=['Test'])
         opts = {'Path': {'tools': ['hover']},
                 'NdOverlay': {'legend_limit': 0}}
-        obj = obj(plot=opts)
+        obj = obj.opts(plot=opts)
         self._test_hover_info(obj, [('Test', '@{Test}')])
 
     def test_path_colored_by_levels_single_value(self):
         xs = [1, 2, 3, 4]
         ys = xs[::-1]
-        color = [998, 998, 998, 998]
+        color = [998, 999, 998, 998]
         date = np.datetime64(dt.datetime(2018, 8, 1))
         data = {'x': xs, 'y': ys, 'color': color, 'date': date}
         levels = [0, 38, 73, 95, 110, 130, 156, 999]
@@ -74,12 +72,10 @@ class TestPathPlot(TestBokehPlot):
 
         self.assertEqual(source.data['xs'], [np.array([1, 2]), np.array([2, 3]), np.array([3, 4])])
         self.assertEqual(source.data['ys'], [np.array([4, 3]), np.array([3, 2]), np.array([2, 1])])
-        self.assertEqual(source.data['color'], np.array([998, 998, 998]))
-        self.assertEqual(source.data['date'],
-                         np.array([1533081600000000000, 1533081600000000000, 1533081600000000000]))
+        self.assertEqual(source.data['color'], np.array([998, 999, 998]))
         self.assertEqual(source.data['date_dt_strings'],
                          np.array(['2018-08-01 00:00:00', '2018-08-01 00:00:00', '2018-08-01 00:00:00']))
-        self.assertEqual(cmapper.low, 156)
+        self.assertEqual(cmapper.low, 998)
         self.assertEqual(cmapper.high, 999)
         self.assertEqual(cmapper.palette, colors[-1:])
 
@@ -100,8 +96,6 @@ class TestPathPlot(TestBokehPlot):
         self.assertEqual(source.data['xs'], [np.array([1, 2]), np.array([2, 3]), np.array([3, 4])])
         self.assertEqual(source.data['ys'], [np.array([4, 3]), np.array([3, 2]), np.array([2, 1])])
         self.assertEqual(source.data['color'], np.array([998, 999, 998]))
-        self.assertEqual(source.data['date'],
-                         np.array([1533081600000000000, 1533081600000000000, 1533081600000000000]))
         self.assertEqual(source.data['date_dt_strings'],
                          np.array(['2018-08-01 00:00:00', '2018-08-01 00:00:00', '2018-08-01 00:00:00']))
         self.assertEqual(cmapper.low, 994)
@@ -145,7 +139,8 @@ class TestPathPlot(TestBokehPlot):
         path = Path(data, vdims="cat").opts(color="cat", cmap=dict(zip(levels, colors)), line_width=4, show_legend=True)
         plot = bokeh_renderer.get_plot(path)
         item = plot.state.legend[0].items[0]
-        self.assertEqual(item.label, 'color_str__')
+        legend = {'field': 'color_str__'}
+        self.assertEqual(item.label, legend)
         self.assertEqual(item.renderers, [plot.handles['glyph_renderer']])
 
         
@@ -153,15 +148,15 @@ class TestPathPlot(TestBokehPlot):
 class TestPolygonPlot(TestBokehPlot):
 
     def test_polygons_overlay_hover(self):
-        obj = NdOverlay({i: Polygons([np.random.rand(10,2)], vdims=['z'], level=0)
+        obj = NdOverlay({i: Polygons([{('x', 'y'): np.random.rand(10,2), 'z': 0}], vdims=['z'])
                          for i in range(5)}, kdims=['Test'])
         opts = {'Polygons': {'tools': ['hover']},
                 'NdOverlay': {'legend_limit': 0}}
-        obj = obj(plot=opts)
+        obj = obj.opts(plot=opts)
         self._test_hover_info(obj, [('Test', '@{Test}'), ('z', '@{z}')])
 
     def test_polygons_colored(self):
-        polygons = NdOverlay({j: Polygons([[(i**j, i) for i in range(10)]], level=j)
+        polygons = NdOverlay({j: Polygons([[(i**j, i, j) for i in range(10)]], vdims='Value')
                               for j in range(5)})
         plot = bokeh_renderer.get_plot(polygons)
         for i, splot in enumerate(plot.subplots.values()):
@@ -172,7 +167,7 @@ class TestPolygonPlot(TestBokehPlot):
             self.assertEqual(source.data['Value'], np.array([i]))
 
     def test_polygons_colored_batched(self):
-        polygons = NdOverlay({j: Polygons([[(i**j, i) for i in range(10)]], level=j)
+        polygons = NdOverlay({j: Polygons([[(i**j, i, j) for i in range(10)]], vdims='Value')
                               for j in range(5)}).opts(plot=dict(legend_limit=0))
         plot = list(bokeh_renderer.get_plot(polygons).subplots.values())[0]
         cmapper = plot.handles['color_mapper']
@@ -183,8 +178,8 @@ class TestPolygonPlot(TestBokehPlot):
         self.assertEqual(source.data['Value'], list(range(5)))
 
     def test_polygons_colored_batched_unsanitized(self):
-        polygons = NdOverlay({j: Polygons([[(i**j, i) for i in range(10)] for i in range(2)],
-                                          level=j, vdims=['some ? unescaped name'])
+        polygons = NdOverlay({j: Polygons([[(i**j, i, j) for i in range(10)] for i in range(2)],
+                                          vdims=['some ? unescaped name'])
                               for j in range(5)}).opts(plot=dict(legend_limit=0))
         plot = list(bokeh_renderer.get_plot(polygons).subplots.values())[0]
         cmapper = plot.handles['color_mapper']
@@ -203,24 +198,20 @@ class TestPolygonPlot(TestBokehPlot):
         self.assertEqual(len(source.data['Intensity']), 0)
 
     def test_polygon_with_hole_plot(self):
-        if bokeh_version < '1.0':
-            raise SkipTest('Plotting Polygons with holes requires bokeh >= 1.0')
         xs = [1, 2, 3]
         ys = [2, 0, 7]
         holes = [[[(1.5, 2), (2, 3), (1.6, 1.6)], [(2.1, 4.5), (2.5, 5), (2.3, 3.5)]]]
         poly = Polygons([{'x': xs, 'y': ys, 'holes': holes}])
         plot = bokeh_renderer.get_plot(poly)
         source = plot.handles['source']
-        self.assertEqual(source.data['xs'], [[[np.array([1, 2, 3]), np.array([1.5, 2, 1.6]),
-                                              np.array([2.1, 2.5, 2.3])]]])
-        self.assertEqual(source.data['ys'], [[[np.array([2, 0, 7]), np.array([2, 3, 1.6]),
-                                              np.array([4.5, 5, 3.5])]]])
+        self.assertEqual(source.data['xs'], [[[np.array([1, 2, 3, 1]), np.array([1.5, 2, 1.6, 1.5]),
+                                              np.array([2.1, 2.5, 2.3, 2.1])]]])
+        self.assertEqual(source.data['ys'], [[[np.array([2, 0, 7, 2]), np.array([2, 3, 1.6, 2]),
+                                              np.array([4.5, 5, 3.5, 4.5])]]])
 
     def test_multi_polygon_hole_plot(self):
-        if bokeh_version < '1.0':
-            raise SkipTest('Plotting Polygons with holes requires bokeh >= 1.0')
-        xs = [1, 2, 3, np.nan, 6, 7, 3]
-        ys = [2, 0, 7, np.nan, 7, 5, 2]
+        xs = [1, 2, 3, np.nan, 3, 7, 6]
+        ys = [2, 0, 7, np.nan, 2, 5, 7]
         holes = [
             [[(1.5, 2), (2, 3), (1.6, 1.6)], [(2.1, 4.5), (2.5, 5), (2.3, 3.5)]],
             []
@@ -228,10 +219,10 @@ class TestPolygonPlot(TestBokehPlot):
         poly = Polygons([{'x': xs, 'y': ys, 'holes': holes}])
         plot = bokeh_renderer.get_plot(poly)
         source = plot.handles['source']
-        self.assertEqual(source.data['xs'], [[[np.array([1, 2, 3]), np.array([1.5, 2, 1.6]),
-                                               np.array([2.1, 2.5, 2.3])], [np.array([6, 7, 3])]]])
-        self.assertEqual(source.data['ys'], [[[np.array([2, 0, 7]), np.array([2, 3, 1.6]),
-                                               np.array([4.5, 5, 3.5])], [np.array([7, 5, 2])]]])
+        self.assertEqual(source.data['xs'], [[[np.array([1, 2, 3, 1]), np.array([1.5, 2, 1.6, 1.5]),
+                                               np.array([2.1, 2.5, 2.3, 2.1])], [np.array([3, 7, 6, 3])]]])
+        self.assertEqual(source.data['ys'], [[[np.array([2, 0, 7, 2]), np.array([2, 3, 1.6, 2]),
+                                               np.array([4.5, 5, 3.5, 4.5])], [np.array([2, 5, 7, 2])]]])
 
     def test_polygons_hover_color_op(self):
         polygons = Polygons([
@@ -313,8 +304,6 @@ class TestPolygonPlot(TestBokehPlot):
         self.assertEqual(cds.data['line_width'], np.array([7, 3]))
 
     def test_polygons_holes_initialize(self):
-        if bokeh_version < '1.0':
-            raise SkipTest('Plotting Polygons with holes requires bokeh >= 1.0')
         from bokeh.models import MultiPolygons
         xs = [1, 2, 3, np.nan, 6, 7, 3]
         ys = [2, 0, 7, np.nan, 7, 5, 2]
@@ -330,8 +319,6 @@ class TestPolygonPlot(TestBokehPlot):
         self.assertIsInstance(glyph, MultiPolygons)
 
     def test_polygons_no_holes_with_draw_tool(self):
-        if bokeh_version < '1.0':
-            raise SkipTest('Plotting Polygons with holes requires bokeh >= 1.0')
         from bokeh.models import Patches
         xs = [1, 2, 3, np.nan, 6, 7, 3]
         ys = [2, 0, 7, np.nan, 7, 5, 2]

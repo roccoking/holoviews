@@ -1,15 +1,18 @@
+import re
+
 import numpy as np
 
 from holoviews.core import (HoloMap, GridSpace, Layout, Empty, Dataset,
-                            NdOverlay, DynamicMap, Dimension)
-from holoviews.element import Curve, Image, Points, Histogram
+                            NdOverlay, NdLayout, DynamicMap, Dimension)
+from holoviews.element import Curve, Image, Points, Histogram, Scatter
 from holoviews.streams import Stream
+from holoviews.util import render, opts
 
 from .testplot import TestBokehPlot, bokeh_renderer
 
 try:
     from bokeh.layouts import Column, Row
-    from bokeh.models import Div, ToolbarBox, GlyphRenderer, Tabs, Panel, Spacer, GridBox
+    from bokeh.models import Div, ToolbarBox, GlyphRenderer, Tabs, Panel, Spacer, GridBox, Title
     from bokeh.plotting import Figure
 except:
     pass
@@ -39,6 +42,39 @@ class TestLayoutPlot(TestBokehPlot):
         text = ('<span style="color:black;font-family:Arial;font-style:bold;'
                 'font-weight:bold;font-size:12pt">Default: 0</span>')
         self.assertEqual(title.text, text)
+
+    def test_layout_title_format(self):
+        title_str = ('Label: {label}, group: {group}, '
+                     'dims: {dimensions}, type: {type}')
+        layout = NdLayout(
+            {'Element 1': Scatter(
+                [],
+                label='ONE',
+                group='first',
+            ), 'Element 2': Scatter(
+                [],
+                label='TWO',
+                group='second',
+            )},
+            kdims='MYDIM',
+            label='the_label',
+            group='the_group',
+        ).opts(opts.NdLayout(title=title_str), opts.Scatter(title=title_str))
+        # Title of NdLayout
+        title = bokeh_renderer.get_plot(layout).handles['title']
+        self.assertIsInstance(title, Div)
+        text = 'Label: the_label, group: the_group, dims: , type: NdLayout'
+        self.assertEqual(re.split('>|</', title.text)[1], text)
+        # Titles of subplots
+        plot = render(layout)
+        titles = {
+            title.text for title in list(plot.select({'type': Title}))
+        }
+        titles_correct = {
+            'Label: ONE, group: first, dims: MYDIM: Element 1, type: Scatter',
+            'Label: TWO, group: second, dims: MYDIM: Element 2, type: Scatter',
+        }
+        self.assertEqual(titles_correct, titles)
 
     def test_layout_title_fontsize(self):
         hmap1 = HoloMap({a: Image(np.random.rand(10,10)) for a in range(3)})
@@ -119,7 +155,7 @@ class TestLayoutPlot(TestBokehPlot):
     def test_layout_instantiate_subplots_transposed(self):
         layout = (Curve(range(10)) + Curve(range(10)) + Image(np.random.rand(10,10)) +
                   Curve(range(10)) + Curve(range(10)))
-        plot = bokeh_renderer.get_plot(layout(plot=dict(transpose=True)))
+        plot = bokeh_renderer.get_plot(layout.opts(transpose=True))
         positions = [(0, 0), (0, 1), (1, 0), (2, 0), (3, 0)]
         self.assertEqual(sorted(plot.subplots.keys()), positions)
 
@@ -287,3 +323,13 @@ class TestLayoutPlot(TestBokehPlot):
         self.assertIn('aname: ' + T, p.handles['title'].text, p.handles['title'].text)
         p.cleanup()
         self.assertEqual(stream._subscribers, [])
+
+    def test_layout_shared_axes_disabled(self):
+        layout = (Curve([1, 2, 3]) + Curve([10, 20, 30])).opts(shared_axes=False)
+        plot = bokeh_renderer.get_plot(layout)
+        cp1, cp2 = plot.subplots[(0, 0)].subplots['main'], plot.subplots[(0, 1)].subplots['main']
+        self.assertFalse(cp1.handles['y_range'] is cp2.handles['y_range'])
+        self.assertEqual(cp1.handles['y_range'].start, 1)
+        self.assertEqual(cp1.handles['y_range'].end, 3)
+        self.assertEqual(cp2.handles['y_range'].start, 10)
+        self.assertEqual(cp2.handles['y_range'].end, 30)

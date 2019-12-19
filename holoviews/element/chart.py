@@ -1,5 +1,4 @@
 import numpy as np
-import copy
 import param
 
 from ..streams import BoundsXY
@@ -98,7 +97,6 @@ class Scatter(Chart2dSelectionExpr, Chart):
     location along the x-axis while the first value dimension
     represents the location of the point along the y-axis.
     """
-
     group = param.String(default='Scatter', constant=True)
 
 
@@ -117,8 +115,16 @@ class ErrorBars(Chart2dSelectionExpr, Chart):
     """
     ErrorBars is a Chart element representing error bars in a 1D
     coordinate system where the key dimension corresponds to the
-    location along the x-axis and the value dimensions define the
-    location along the y-axis and the symmetric or assymetric spread.
+    location along the x-axis and the first value dimension 
+    corresponds to the location along the y-axis and one or two 
+    extra value dimensions corresponding to the symmetric or 
+    asymetric errors either along x-axis or y-axis. If two value
+    dimensions are given, then the last value dimension will be 
+    taken as symmetric errors. If three value dimensions are given 
+    then the last two value dimensions will be taken as negative and
+    positive errors. By default the errors are defined along y-axis.
+    A parameter `horizontal`, when set `True`, will define the errors
+    along the x-axis.
     """
     group = param.String(default='ErrorBars', constant=True, doc="""
         A string describing the quantity measured by the ErrorBars
@@ -127,6 +133,8 @@ class ErrorBars(Chart2dSelectionExpr, Chart):
     vdims = param.List(default=[Dimension('y'), Dimension('yerror')],
                        bounds=(1, None), constant=True)
 
+    horizontal = param.Boolean(default=False, doc="""
+        Whether the errors are along y-axis (vertical) or x-axis.""")
 
     def range(self, dim, data_range=True, dimension_range=True):
         """Return the lower and upper bounds of values along dimension.
@@ -144,10 +152,11 @@ class ErrorBars(Chart2dSelectionExpr, Chart):
         Returns:
             Tuple containing the lower and upper bound
         """
+        dim_with_err = 0 if self.horizontal else 1
         didx = self.get_dimension_index(dim)
         dim = self.get_dimension(dim)
-        if didx == 1 and data_range and len(self):
-            mean = self.dimension_values(1)
+        if didx == dim_with_err and data_range and len(self):
+            mean = self.dimension_values(didx)
             neg_error = self.dimension_values(2)
             if len(self.dimensions()) > 3:
                 pos_error = self.dimension_values(3)
@@ -225,60 +234,7 @@ class Histogram(Chart):
         elif isinstance(data, tuple) and len(data) == 2 and len(data[0])+1 == len(data[1]):
             data = data[::-1]
 
-        self._operation_kwargs = params.pop('_operation_kwargs', None)
-
-        dataset = params.pop("dataset", None)
         super(Histogram, self).__init__(data, **params)
-
-        if dataset:
-            # Histogram is a special case in which we keep the data from the
-            # input dataset rather than replace it with the element data.
-            # This is so that dataset contains the data needed to reconstruct
-            # the element.
-            self._dataset = dataset.clone()
-
-    def clone(self, data=None, shared_data=True, new_type=None, *args, **overrides):
-        if 'dataset' in overrides:
-            dataset = overrides.pop('dataset', None)
-        else:
-            dataset = self.dataset
-
-        overrides["dataset"] = None
-
-        new_element = super(Histogram, self).clone(
-            data=data,
-            shared_data=shared_data,
-            new_type=new_type,
-            _operation_kwargs=copy.deepcopy(self._operation_kwargs),
-            *args,
-            **overrides
-        )
-
-        if dataset:
-            # Histogram is a special case in which we keep the data from the
-            # input dataset rather than replace it with the element data.
-            # This is so that dataset contains the data needed to reconstruct
-            # the element.
-            new_element._dataset = dataset.clone()
-
-        return new_element
-
-    def select(self, selection_specs=None, **selection):
-        selected = super(Histogram, self).select(
-            selection_specs=selection_specs, **selection
-        )
-
-        if not np.isscalar(selected) and not np.array_equal(selected.data, self.data):
-            # Selection changed histogram bins, so update dataset
-            selection = {
-                dim: sel for dim, sel in selection.items()
-                if dim in self.dimensions()+['selection_mask']
-            }
-
-            if selected._dataset is not None:
-                selected._dataset = self.dataset.select(**selection)
-
-        return selected
 
     def _get_selection_expr_for_stream_value(self, **kwargs):
         from ..util.transform import dim
@@ -348,18 +304,14 @@ class Histogram(Chart):
     @property
     def values(self):
         "Property to access the Histogram values provided for backward compatibility"
-        if util.config.future_deprecations:
-            self.param.warning('Histogram.values is deprecated in favor of '
-                               'common dimension_values method.')
+        self.param.warning('Histogram.values is deprecated in favor of '
+                           'common dimension_values method.')
         return self.dimension_values(1)
 
 
     @property
     def edges(self):
         "Property to access the Histogram edges provided for backward compatibility"
-        if util.config.future_deprecations:
-            self.param.warning('Histogram.edges is deprecated in favor of '
-                               'common dimension_values method.')
         return self.interface.coords(self, self.kdims[0], edges=True)
 
 

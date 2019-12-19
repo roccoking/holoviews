@@ -717,7 +717,7 @@ class Params(Stream):
     @property
     def hashkey(self):
         hashkey = {(p.owner, p.name): getattr(p.owner, p.name) for p in self.parameters}
-        hashkey = {self._rename.get((o, n), n): v for (o, n), v in hashkey.items()
+        hashkey = {' '.join([o.name, self._rename.get((o, n), n)]): v for (o, n), v in hashkey.items()
                    if self._rename.get((o, n), True) is not None}
         hashkey['_memoize_key'] = self._memoize_counter
         return hashkey
@@ -1069,12 +1069,30 @@ class PointDraw(CDSStream):
     num_objects: int
         The number of polygons that can be drawn before overwriting
         the oldest polygon.
+
+    styles: dict
+        A dictionary specifying lists of styles to cycle over whenever
+        a new Point glyph is drawn.
+
+    tooltip: str
+        An optional tooltip to override the default
+
+    styles: dict
+        A dictionary specifying lists of styles to cycle over whenever
+        a new Point glyph is drawn.
+
+    tooltip: str
+        An optional tooltip to override the default
     """
 
-    def __init__(self, empty_value=None, drag=True, num_objects=0, **params):
+    def __init__(self, empty_value=None, drag=True, num_objects=0, styles={},
+                 tooltip=None, **params):
         self.drag = drag
         self.empty_value = empty_value
         self.num_objects = num_objects
+        self.styles = styles
+        self.tooltip = tooltip
+        self.styles = styles
         super(PointDraw, self).__init__(**params)
 
     @property
@@ -1110,25 +1128,29 @@ class PolyDraw(CDSStream):
     show_vertices: boolean
         Whether to show the vertices when a polygon is selected
 
+    styles: dict
+        A dictionary specifying lists of styles to cycle over whenever
+        a new Poly glyph is drawn.
+
+    tooltip: str
+        An optional tooltip to override the default
+
     vertex_style: dict
         A dictionary specifying the style options for the vertices.
         The usual bokeh style options apply, e.g. fill_color,
         line_alpha, size, etc.
-
-    styles: dict
-        A dictionary specifying lists of styles to cycle over whenever
-        a new Poly glyph is drawn.
     """
 
     def __init__(self, empty_value=None, drag=True, num_objects=0,
                  show_vertices=False, vertex_style={}, styles={},
-                 **params):
+                 tooltip=None, **params):
         self.drag = drag
         self.empty_value = empty_value
         self.num_objects = num_objects
         self.show_vertices = show_vertices
         self.vertex_style = vertex_style
         self.styles = styles
+        self.tooltip = tooltip
         super(PolyDraw, self).__init__(**params)
 
     @property
@@ -1144,7 +1166,8 @@ class PolyDraw(CDSStream):
         lookup = {'xs': x.name, 'ys': y.name}
         data = [{lookup.get(c, c): data[c][i] for c in self.data}
                 for i in range(len(data[cols[0]]))]
-        return source.clone(data, id=None)
+        datatype = source.datatype if source.interface.multi else ['multitabular']
+        return source.clone(data, datatype=datatype, id=None)
 
     @property
     def dynamic(self):
@@ -1166,12 +1189,16 @@ class FreehandDraw(CDSStream):
     styles: dict
         A dictionary specifying lists of styles to cycle over whenever
         a new freehand glyph is drawn.
+
+    tooltip: str
+        An optional tooltip to override the default
     """
 
-    def __init__(self, empty_value=None, num_objects=0, styles={}, **params):
+    def __init__(self, empty_value=None, num_objects=0, styles={}, tooltip=None, **params):
         self.empty_value = empty_value
         self.num_objects = num_objects
         self.styles = styles
+        self.tooltip = tooltip
         super(FreehandDraw, self).__init__(**params)
 
     @property
@@ -1210,12 +1237,16 @@ class BoxEdit(CDSStream):
     styles: dict
         A dictionary specifying lists of styles to cycle over whenever
         a new box glyph is drawn.
+
+    tooltip: str
+        An optional tooltip to override the default
     """
 
-    def __init__(self, empty_value=None, num_objects=0, styles={}, **params):
+    def __init__(self, empty_value=None, num_objects=0, styles={}, tooltip=None, **params):
         self.empty_value = empty_value
         self.num_objects = num_objects
         self.styles = styles
+        self.tooltip = tooltip
         super(BoxEdit, self).__init__(**params)
 
     @property
@@ -1228,14 +1259,16 @@ class BoxEdit(CDSStream):
         if not data:
             return source.clone([])
         paths = []
-        for (x0, x1, y0, y1) in zip(data['x0'], data['x1'], data['y0'], data['y1']):
+        for i, (x0, x1, y0, y1) in enumerate(zip(data['x0'], data['x1'], data['y0'], data['y1'])):
             xs = [x0, x0, x1, x1]
             ys = [y0, y1, y1, y0]
             if isinstance(source, Polygons):
                 xs.append(x0)
                 ys.append(y0)
-            paths.append(np.column_stack((xs, ys)))
-        return source.clone(paths)
+            vals = [data[vd.name][i] for vd in source.vdims]
+            paths.append((xs, ys)+tuple(vals))
+        datatype = source.datatype if source.interface.multi else ['multitabular']
+        return source.clone(paths, datatype=datatype, id=None)
 
     @property
     def dynamic(self):
@@ -1250,6 +1283,9 @@ class PolyEdit(PolyDraw):
 
     shared: boolean
         Whether PolyEditTools should be shared between multiple elements
+
+    tooltip: str
+        An optional tooltip to override the default
 
     vertex_style: dict
         A dictionary specifying the style options for the vertices.

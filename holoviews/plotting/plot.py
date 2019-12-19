@@ -17,17 +17,18 @@ import param
 from panel.io.notebook import push
 from panel.io.state import state
 
+from ..selection import NoOpSelectionDisplay
 from ..core import OrderedDict
 from ..core import util, traversal
 from ..core.element import Element, Element3D
 from ..core.overlay import Overlay, CompositeOverlay
 from ..core.layout import Empty, NdLayout, Layout
-from ..core.options import Store, Compositor, SkipRendering
+from ..core.options import Store, Compositor, SkipRendering, lookup_options
 from ..core.overlay import NdOverlay
 from ..core.spaces import HoloMap, DynamicMap
 from ..core.util import stream_parameters, isfinite
 from ..element import Table, Graph, Contours
-from ..streams import Stream
+from ..streams import Stream, RangeXY, RangeX, RangeY
 from ..util.transform import dim
 from .util import (get_dynamic_mode, initialize_unbounded, dim_axis_label,
                    attach_streams, traverse_setter, get_nested_streams,
@@ -61,6 +62,8 @@ class Plot(param.Parameterized):
         self._document = None
         self._root = None
         self._pane = None
+        self._triggering = []
+        self._trigger = []
         self.set_root(root)
 
 
@@ -190,21 +193,35 @@ class Plot(param.Parameterized):
             if (curdoc() is not self.document or (state._thread_id is not None and
                 thread_id != state._thread_id)):
                 # If we do not have the Document lock, schedule refresh as callback
-                self.document.add_next_tick_callback(self.refresh)
-                return
+                self._triggering += [s for p in self.traverse(lambda x: x, [Plot])
+                                     for s in p.streams if s._triggering]
+                if self.document.session_context:
+                    self.document.add_next_tick_callback(self.refresh)
+                    return
 
-        traverse_setter(self, '_force', True)
-        key = self.current_key if self.current_key else self.keys[0]
-        dim_streams = [stream for stream in self.streams
-                       if any(c in self.dimensions for c in stream.contents)]
-        stream_params = stream_parameters(dim_streams)
-        key = tuple(None if d in stream_params else k
-                    for d, k in zip(self.dimensions, key))
-        stream_key = util.wrap_tuple_streams(key, self.dimensions, self.streams)
+        # Ensure that server based tick callbacks maintain stream triggering state
+        for s in self._triggering:
+            s._triggering = True
+        try:
+            traverse_setter(self, '_force', True)
+            key = self.current_key if self.current_key else self.keys[0]
+            dim_streams = [stream for stream in self.streams
+                           if any(c in self.dimensions for c in stream.contents)]
+            stream_params = stream_parameters(dim_streams)
+            key = tuple(None if d in stream_params else k
+                        for d, k in zip(self.dimensions, key))
+            stream_key = util.wrap_tuple_streams(key, self.dimensions, self.streams)
 
-        self._trigger_refresh(stream_key)
-        if self.top_level:
-            self.push()
+            self._trigger_refresh(stream_key)
+            if self.top_level:
+                self.push()
+        except Exception as e:
+            raise e
+        finally:
+            # Reset triggering state
+            for s in self._triggering:
+                s._triggering = False
+            self._triggering = []
 
 
     def _trigger_refresh(self, key):
@@ -246,22 +263,7 @@ class Plot(param.Parameterized):
 
     @classmethod
     def lookup_options(cls, obj, group):
-        plot_class = None
-        try:
-            plot_class = Store.renderers[cls.backend].plotting_class(obj)
-            style_opts = plot_class.style_opts
-        except SkipRendering:
-            style_opts = None
-
-        node = Store.lookup_options(cls.backend, obj, group)
-        if group == 'style' and style_opts is not None:
-            return node.filtered(style_opts)
-        elif group == 'plot' and plot_class:
-            return node.filtered(list(plot_class.params().keys()))
-        else:
-            return node
-
-
+        return lookup_options(obj, group, cls.backend)
 
 class PlotSelector(object):
     """
@@ -470,6 +472,42 @@ class DimensionedPlot(Plot):
         return util.bytes_to_unicode(separator.join(g for g in groups if g))
 
 
+    def _format_title(self, key, dimensions=True, separator='\n'):
+        if self.title_format and util.config.future_deprecations:
+            self.param.warning('title_format is deprecated. Please use title instead')
+
+        label, group, type_name, dim_title = self._format_title_components(
+            key, dimensions=True, separator='\n'
+        )
+
+        custom_title = (self.title != self.param.params('title').default)
+        if custom_title and self.title_format:
+            self.warning('Both title and title_format set. Using title')
+        title_str = (
+            self.title if custom_title or self.title_format is None
+            else self.title_format
+        )
+
+        title = util.bytes_to_unicode(title_str).format(
+            label=util.bytes_to_unicode(label),
+            group=util.bytes_to_unicode(group),
+            type=type_name,
+            dimensions=dim_title
+        )
+        return title.strip(' \n')
+
+
+    def _format_title_components(self, key, dimensions=True, separator='\n'):
+        """
+        Determine components of title as used by _format_title method.
+
+        To be overridden in child classes.
+
+        Return signature: (label, group, type_name, dim_title)
+        """
+        return (self.label, self.group, type(self).__name__, '')
+
+
     def _fontsize(self, key, label='fontsize', common=True):
         if not self.fontsize: return {}
 
@@ -518,6 +556,7 @@ class DimensionedPlot(Plot):
         # been supplied from a composite plot
         return_fn = lambda x: x if isinstance(x, Element) else None
         for group, (axiswise, framewise) in norm_opts.items():
+            axiswise = (not getattr(self, 'shared_axes', True)) or (axiswise)
             elements = []
             # Skip if ranges are cached or already computed by a
             # higher-level container object.
@@ -665,6 +704,9 @@ class DimensionedPlot(Plot):
                             values = el.dimension_values(el_dim, expanded=False)
                     elif isinstance(el, Graph) and el_dim in el.nodes:
                         values = el.nodes.dimension_values(el_dim, expanded=False)
+                    if (isinstance(values, np.ndarray) and values.dtype.kind == 'O' and
+                        all(isinstance(v, (np.ndarray)) for v in values)):
+                        values = np.concatenate(values)
                     factors = util.unique_array(values)
                     group_ranges[el_dim.name]['factors'].append(factors)
 
@@ -947,6 +989,8 @@ class GenericElementPlot(DimensionedPlot):
     _propagate_options = []
     v17_option_propagation = True
 
+    _selection_display = NoOpSelectionDisplay()
+
     def __init__(self, element, keys=None, ranges=None, dimensions=None,
                  batched=False, overlaid=0, cyclic_index=0, zorder=0, style=None,
                  overlay_dims={}, stream_sources=[], streams=None, **params):
@@ -1098,9 +1142,27 @@ class GenericElementPlot(DimensionedPlot):
 
         if not self.overlaid and not self.batched:
             xspan, yspan, zspan = (v/2. for v in get_axis_padding(self.default_span))
-            x0, x1 = get_minimum_span(x0, x1, xspan)
-            y0, y1 = get_minimum_span(y0, y1, yspan)
-            z0, z1 = get_minimum_span(z0, z1, zspan)
+            mx0, mx1 = get_minimum_span(x0, x1, xspan)
+
+            # If auto-padding is enabled ensure RangeXY dependent plots
+            # are recomputed before initial render
+            if x0 != mx0 or x1 != mx1:
+                for stream in self.streams:
+                    if isinstance(stream, (RangeX, RangeXY)):
+                        stream.update(x_range=(mx0, mx1))
+                        if stream not in self._trigger:
+                            self._trigger.append(stream)
+                x0, x1 = mx0, mx1
+            my0, my1 = get_minimum_span(y0, y1, yspan)
+            if y0 != my0 or y1 != my1:
+                for stream in self.streams:
+                    if isinstance(stream, (RangeY, RangeXY)):
+                        stream.update(y_range=(my0, my1))
+                        if stream not in self._trigger:
+                            self._trigger.append(stream)
+                y0, y1 = my0, my1
+
+            mz0, mz1 = get_minimum_span(z0, z1, zspan)
         xpad, ypad, zpad = self.get_padding((x0, y0, z0, x1, y1, z1))
 
         if range_type == 'soft':
@@ -1223,33 +1285,19 @@ class GenericElementPlot(DimensionedPlot):
         return xlabel, ylabel, zlabel
 
 
-    def _format_title(self, key, dimensions=True, separator='\n'):
+    def _format_title_components(self, key, dimensions=True, separator='\n'):
         frame = self._get_frame(key)
         if frame is None: return None
         type_name = type(frame).__name__
         group = frame.group if frame.group != type_name else ''
         label = frame.label
 
-        if self.layout_dimensions:
+        if self.layout_dimensions or dimensions:
             dim_title = self._frame_title(key, separator=separator)
-            title = dim_title
         else:
-            if dimensions:
-                dim_title = self._frame_title(key, separator=separator)
-            else:
-                dim_title = ''
+            dim_title = ''
 
-            custom_title = (self.title != self.param.params('title').default)
-            if custom_title and self.title_format:
-                self.warning('Both title and title_format set. Using title_format parameter')
-
-            title = self.title if custom_title or self.title_format is None else self.title_format
-            title_format = util.bytes_to_unicode(title)
-            title = title_format.format(label=util.bytes_to_unicode(label),
-                                        group=util.bytes_to_unicode(group),
-                                        type=type_name,
-                                        dimensions=dim_title)
-        return title.strip(' \n')
+        return (label, group, type_name, dim_title)
 
 
     def update_frame(self, key, ranges=None):
@@ -1636,24 +1684,13 @@ class GenericCompositePlot(DimensionedPlot):
         return layout_frame
 
 
-    def _format_title(self, key, dimensions=True, separator='\n'):
+    def _format_title_components(self, key, dimensions=True, separator='\n'):
         dim_title = self._frame_title(key, 3, separator) if dimensions else ''
         layout = self.layout
         type_name = type(self.layout).__name__
         group = util.bytes_to_unicode(layout.group if layout.group != type_name else '')
         label = util.bytes_to_unicode(layout.label)
-
-
-        custom_title = (self.title != self.param.params('title').default)
-        if custom_title and self.title_format:
-            self.warning('Both title and title_format set. Using title parameter')
-        title_str = self.title if custom_title or self.title_format is None else self.title_format
-
-        title = util.bytes_to_unicode(title_str).format(label=label,
-                                                        group=group,
-                                                        type=type_name,
-                                                        dimensions=dim_title)
-        return title.strip(' \n')
+        return (label, group, type_name, dim_title)
 
 
 class GenericLayoutPlot(GenericCompositePlot):

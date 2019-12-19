@@ -4,7 +4,8 @@ from collections import defaultdict
 
 import param
 import numpy as np
-from bokeh.models import Span, Arrow, Div as BkDiv
+from bokeh.models import BoxAnnotation, Span, Arrow, Div as BkDiv, Slope
+
 try:
     from bokeh.models.arrow_heads import TeeHead, NormalHead
     arrow_start = {'<->': NormalHead, '<|-|>': NormalHead}
@@ -18,10 +19,10 @@ except:
 from bokeh.transform import dodge
 
 from ...core.util import datetime_types, dimension_sanitizer
-from ...element import HLine, VLine
+from ...element import HLine, VLine, VSpan
 from ..plot import GenericElementPlot
 from .element import AnnotationPlot, ElementPlot, CompositeElementPlot, ColorbarPlot
-from .styles import text_properties, line_properties
+from .styles import text_properties, line_properties, fill_properties
 from .plot import BokehPlot
 from .util import date_to_integer
 
@@ -149,6 +150,70 @@ class LineAnnotationPlot(ElementPlot, AnnotationPlot):
 
 
 
+class BoxAnnotationPlot(ElementPlot, AnnotationPlot):
+
+    apply_ranges = param.Boolean(default=False, doc="""
+        Whether to include the annotation in axis range calculations.""")
+
+    style_opts = line_properties + fill_properties + ['level', 'visible']
+
+    _plot_methods = dict(single='BoxAnnotation')
+
+    def get_data(self, element, ranges, style):
+        data, mapping = {}, {}
+        kwd_dim1 = 'left' if isinstance(element, VSpan) else 'bottom'
+        kwd_dim2 = 'right' if isinstance(element, VSpan) else 'top'
+        if self.invert_axes:
+            kwd_dim1 = 'bottom' if kwd_dim1 == 'left' else 'left'
+            kwd_dim2 = 'top' if kwd_dim2 == 'right' else 'right'
+
+        locs = element.data
+        if isinstance(locs, datetime_types):
+            locs = [date_to_integer(loc) for loc in locs]
+        mapping[kwd_dim1] = locs[0]
+        mapping[kwd_dim2] = locs[1]
+        return (data, mapping, style)
+
+    def _init_glyph(self, plot, mapping, properties):
+        """
+        Returns a Bokeh glyph object.
+        """
+        box = BoxAnnotation(level=properties.get('level', 'glyph'), **mapping)
+        plot.renderers.append(box)
+        return None, box
+
+
+class SlopePlot(ElementPlot, AnnotationPlot):
+
+    style_opts = line_properties + ['level']
+
+    _plot_methods = dict(single='Slope')
+
+    def get_data(self, element, ranges, style):
+        data, mapping = {}, {}
+        gradient, intercept = element.data
+        if self.invert_axes:
+            if gradient == 0:
+                gradient = np.inf, np.inf
+            else:
+                gradient, intercept = 1/gradient, -(intercept/gradient)
+        mapping['gradient'] = gradient
+        mapping['y_intercept'] = intercept
+        return (data, mapping, style)
+
+    def _init_glyph(self, plot, mapping, properties):
+        """
+        Returns a Bokeh glyph object.
+        """
+        slope = Slope(level=properties.get('level', 'glyph'), **mapping)
+        plot.add_layout(slope)
+        return None, slope
+
+    def get_extents(self, element, ranges=None, range_type='combined'):
+        return None, None, None, None
+
+
+
 class SplinePlot(ElementPlot, AnnotationPlot):
     """
     Draw the supplied Spline annotation (see Spline docstring).
@@ -232,7 +297,7 @@ class ArrowPlot(CompositeElementPlot, AnnotationPlot):
         """
         Returns a Bokeh glyph object.
         """
-        properties.pop('legend', None)
+        properties = {k: v for k, v in properties.items() if 'legend' not in k}
         if key == 'arrow':
             properties.pop('source')
             arrow_end = mapping.pop('arrow_end')

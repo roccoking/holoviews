@@ -144,9 +144,8 @@ class HoloMap(UniformNdMapping, Overlayable):
 
     def split_overlays(self):
         "Deprecated method to split overlays inside the HoloMap."
-        if util.config.future_deprecations:
-            self.param.warning("split_overlays is deprecated and is now "
-                               "a private method.")
+        self.param.warning("split_overlays is deprecated and is now "
+                           "a private method.")
         return self._split_overlays()
 
 
@@ -190,7 +189,7 @@ class HoloMap(UniformNdMapping, Overlayable):
             keys = sorted((d, v) for k in keys for d, v in k)
             grouped =  dict([(g, [v for _, v in group])
                              for g, group in groupby(keys, lambda x: x[0])])
-            dimensions = [d(values=grouped[d.name]) for d in dimensions]
+            dimensions = [d.clone(values=grouped[d.name]) for d in dimensions]
             map_obj = None
 
         # Combine streams
@@ -429,10 +428,9 @@ class HoloMap(UniformNdMapping, Overlayable):
         Returns:
             A Table containing the sampled coordinates
         """
-        if util.config.future_deprecations:
-            self.param.warning('The HoloMap.sample method is deprecated, '
-                               'for equivalent functionality use '
-                               'HoloMap.apply.sample().collapse().')
+        self.param.warning('The HoloMap.sample method is deprecated, '
+                           'for equivalent functionality use '
+                           'HoloMap.apply.sample().collapse().')
 
         dims = self.last.ndims
         if isinstance(samples, tuple) or np.isscalar(samples):
@@ -498,10 +496,9 @@ class HoloMap(UniformNdMapping, Overlayable):
         Returns:
             The Dataset after reductions have been applied.
         """
-        if util.config.future_deprecations:
-            self.param.warning('The HoloMap.reduce method is deprecated, '
-                               'for equivalent functionality use '
-                               'HoloMap.apply.reduce().collapse().')
+        self.param.warning('The HoloMap.reduce method is deprecated, '
+                           'for equivalent functionality use '
+                           'HoloMap.apply.reduce().collapse().')
 
         from ..element import Table
         reduced_items = [(k, v.reduce(dimensions, function, spread_fn, **reduce_map))
@@ -642,6 +639,11 @@ class Callable(param.Parameterized):
          Whether the return value of the callable should be memoized
          based on the call arguments and any streams attached to the
          inputs.""")
+
+    operation = param.Callable(default=None, doc="""
+         The function being applied by the Callable. May be used
+         to record the transform(s) being applied inside the
+         callback function.""")
 
     stream_mapping = param.Dict(default={}, constant=True, doc="""
          Defines how streams should be mapped to objects returned by
@@ -1158,7 +1160,7 @@ class DynamicMap(HoloMap):
         Returns:
             Cloned object
         """
-        if 'link_inputs' in overrides and util.config.future_deprecations:
+        if 'link_inputs' in overrides:
             self.param.warning(
                 'link_inputs argument to the clone method is deprecated, '
                 'use the more general link argument instead.')
@@ -1465,9 +1467,8 @@ class DynamicMap(HoloMap):
 
     def split_overlays(self):
         "Deprecated method to split overlays inside the DynamicMap."
-        if util.config.future_deprecations:
-            self.param.warning("split_overlays is deprecated and is now "
-                               "a private method.")
+        self.param.warning("split_overlays is deprecated and is now "
+                           "a private method.")
         return self._split_overlays()
 
 
@@ -1675,8 +1676,11 @@ class DynamicMap(HoloMap):
                         inner_vals = [(d.name, k) for d, k in inner_dims]
                         return self.select(**dict(outer_vals+inner_vals)).last
                     if inner_kdims or self.streams:
-                        group = self.clone(callback=partial(inner_fn, outer_vals),
-                                           kdims=inner_kdims)
+                        callback = Callable(partial(inner_fn, outer_vals),
+                                            inputs=[self])
+                        group = self.clone(
+                            callback=callback, kdims=inner_kdims
+                        )
                     else:
                         group = inner_fn(outer_vals, ())
                     groups.append((outer, group))

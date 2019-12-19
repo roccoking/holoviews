@@ -26,10 +26,14 @@ class PathPlot(ColorbarPlot):
     style_opts = ['alpha', 'color', 'linestyle', 'linewidth', 'visible', 'cmap']
 
     def get_data(self, element, ranges, style):
+        cdim = element.get_dimension(self.color_index or style.get('color'))
+
         with abbreviated_exception():
             style = self._apply_transforms(element, ranges, style)
 
-        style_mapping = any(True for v in style.values() if isinstance(v, util.arraylike_types))
+        scalar = element.interface.isunique(element, cdim, per_geom=True) if cdim else False
+        style_mapping = any(isinstance(v, util.arraylike_types) and not (k == 'c' and scalar)
+                         for k, v in style.items())
         dims = element.kdims
         xdim, ydim = dims
         generic_dt_format = Dimension.type_formatters[np.datetime64]

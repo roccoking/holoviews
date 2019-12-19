@@ -22,7 +22,7 @@ class CurveComparisonTest(ComparisonTestCase):
         try:
             self.assertEqual(self.curve1, self.curve2)
         except AssertionError as e:
-            if not str(e).startswith("Curve not of matching length."):
+            if not str(e).startswith("Curve not of matching length, 100 vs. 101"):
                 raise self.failureException("Curve mismatch error not raised.")
 
 
@@ -74,13 +74,12 @@ class HistogramComparisonTest(ComparisonTestCase):
 
         np.random.seed(1)
         frequencies1, edges1 = np.histogram([np.random.normal() for i in range(1000)], 20)
-        self.hist1 = Histogram(frequencies1, edges1)
+        self.hist1 = Histogram((edges1, frequencies1))
         np.random.seed(2)
         frequencies2, edges2 =  np.histogram([np.random.normal() for i in range(1000)], 20)
-        self.hist2 = Histogram(frequencies2, edges2)
-        self.hist3 = Histogram(frequencies1, edges2)
-        self.hist4 = Histogram(frequencies2, edges1)
-
+        self.hist2 = Histogram((edges2, frequencies2))
+        self.hist3 = Histogram((edges2, frequencies1))
+        self.hist4 = Histogram((edges1, frequencies2))
 
     def test_histograms_equal_1(self):
         self.assertEqual(self.hist1, self.hist1)
@@ -125,7 +124,7 @@ class ScatterComparisonTest(ComparisonTestCase):
         try:
             self.assertEqual(self.scatter1, self.scatter2)
         except  AssertionError as e:
-            if not str(e).startswith("Scatter not of matching length."):
+            if not str(e).startswith("Scatter not of matching length, 20 vs. 21."):
                 raise self.failureException("Scatter data mismatch error not raised.")
 
     def test_scatter_unequal_data_values(self):
@@ -160,7 +159,7 @@ class PointsComparisonTest(ComparisonTestCase):
         try:
             self.assertEqual(self.points1, self.points2)
         except  AssertionError as e:
-            if not str(e).startswith("Points not of matching length."):
+            if not str(e).startswith("Points not of matching length, 20 vs. 21."):
                 raise self.failureException("Points count mismatch error not raised.")
 
     def test_points_unequal_data_values(self):

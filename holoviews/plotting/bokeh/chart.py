@@ -9,7 +9,9 @@ from bokeh.models import CustomJS, Whisker, Range1d
 from bokeh.models.tools import BoxSelectTool
 from bokeh.transform import jitter
 
-from ...core.data import Dataset
+from ...plotting.bokeh.selection import BokehOverlaySelectionDisplay
+from ...selection import NoOpSelectionDisplay
+from ...core.data import Dataset, Dimension
 from ...core.dimension import dimension_name
 from ...core.util import (
     OrderedDict, max_range, basestring, dimension_sanitizer,
@@ -35,6 +37,8 @@ class PointPlot(LegendPlot, ColorbarPlot):
     _plot_methods = dict(single='scatter', batched='scatter')
     _batched_style_opts = line_properties + fill_properties + ['size', 'marker', 'angle']
 
+    selection_display = BokehOverlaySelectionDisplay()
+
     def get_data(self, element, ranges, style):
         dims = element.dimensions(label=True)
 
@@ -43,10 +47,10 @@ class PointPlot(LegendPlot, ColorbarPlot):
         data = {}
 
         if not self.static_source or self.batched:
-            xdim, ydim = dims[xidx], dims[yidx]
-            data[xdim] = element.dimension_values(xidx)
-            data[ydim] = element.dimension_values(yidx)
-            self._categorize_data(data, (xdim, ydim), element.dimensions())
+            xdim, ydim = dims[:2]
+            data[xdim] = element.dimension_values(xdim)
+            data[ydim] = element.dimension_values(ydim)
+            self._categorize_data(data, dims[:2], element.dimensions())
 
         if 'angle' in style and isinstance(style['angle'], (int, float)):
             style['angle'] = np.deg2rad(style['angle'])
@@ -298,6 +302,8 @@ class HistogramPlot(ColorbarPlot):
 
     _nonvectorized_styles = ['line_dash', 'visible']
 
+    selection_display = BokehOverlaySelectionDisplay()
+
     def get_data(self, element, ranges, style):
         if self.invert_axes:
             mapping = dict(top='right', bottom='left', left=0, right='top')
@@ -407,25 +413,30 @@ class ErrorPlot(ColorbarPlot):
 
     _plot_methods = dict(single=Whisker)
 
+    # selection_display should be changed to BokehOverlaySelectionDisplay
+    # when #3950 is fixed
+    selection_display = NoOpSelectionDisplay()
+
     def get_data(self, element, ranges, style):
         mapping = dict(self._mapping)
         if self.static_source:
             return {}, mapping, style
 
-        base = element.dimension_values(0)
-        ys = element.dimension_values(1)
-        if len(element.vdims) > 2:
-            neg, pos = (element.dimension_values(vd) for vd in element.vdims[1:3])
-            lower, upper = ys-neg, ys+pos
-        else:
-            err = element.dimension_values(2)
-            lower, upper = ys-err, ys+err
-        data = dict(base=base, lower=lower, upper=upper)
+        x_idx, y_idx = (1, 0) if element.horizontal else (0, 1)
+        base = element.dimension_values(x_idx)
+        mean = element.dimension_values(y_idx)
+        neg_error = element.dimension_values(2)
+        pos_idx = 3 if len(element.dimensions()) > 3 else 2
+        pos_error = element.dimension_values(pos_idx)
+        lower = mean - neg_error
+        upper = mean + pos_error
 
-        if self.invert_axes:
+        if element.horizontal ^ self.invert_axes:
             mapping['dimension'] = 'width'
         else:
             mapping['dimension'] = 'height'
+
+        data = dict(base=base, lower=lower, upper=upper)
         self._categorize_data(data, ('base',), element.dimensions())
         return (data, mapping, style)
 
@@ -434,7 +445,7 @@ class ErrorPlot(ColorbarPlot):
         """
         Returns a Bokeh glyph object.
         """
-        properties.pop('legend', None)
+        properties = {k: v for k, v in properties.items() if 'legend' not in k}
         for prop in ['color', 'alpha']:
             if prop not in properties:
                 continue
@@ -559,14 +570,31 @@ class SpikesPlot(ColorbarPlot):
 
     _plot_methods = dict(single='segment')
 
+    selection_display = BokehOverlaySelectionDisplay()
+
+    def _get_axis_dims(self, element):
+        if 'spike_length' in self.lookup_options(element, 'plot').options:
+            return  [element.dimensions()[0], None, None]
+        return super(SpikesPlot, self)._get_axis_dims(element)
+
     def get_extents(self, element, ranges, range_type='combined'):
-        if len(element.dimensions()) > 1:
+        opts = self.lookup_options(element, 'plot').options
+        if len(element.dimensions()) > 1 and 'spike_length' not in opts:
             ydim = element.get_dimension(1)
             s0, s1 = ranges[ydim.name]['soft']
             s0 = min(s0, 0) if isfinite(s0) else 0
             s1 = max(s1, 0) if isfinite(s1) else 0
             ranges[ydim.name]['soft'] = (s0, s1)
-        l, b, r, t = super(SpikesPlot, self).get_extents(element, ranges, range_type)
+        proxy_dim = None
+        if 'spike_length' in opts:
+            proxy_dim = Dimension('proxy_dim')
+            proxy_range = (self.position, self.position + opts['spike_length'])
+            ranges['proxy_dim'] = {'data':    proxy_range,
+                                  'hard':     (np.nan, np.nan),
+                                  'soft':     (np.nan, np.nan),
+                                  'combined': proxy_range}
+        l, b, r, t = super(SpikesPlot, self).get_extents(element, ranges, range_type,
+                                                         ydim=proxy_dim)
         if len(element.dimensions()) == 1 and range_type != 'hard':
             if self.batched:
                 bs, ts = [], []
@@ -589,12 +617,14 @@ class SpikesPlot(ColorbarPlot):
 
         data = {}
         pos = self.position
+
+        opts = self.lookup_options(element, 'plot').options
         if len(element) == 0 or self.static_source:
             data = {'x': [], 'y0': [], 'y1': []}
         else:
             data['x'] = element.dimension_values(0)
             data['y0'] = np.full(len(element), pos)
-            if len(dims) > 1:
+            if len(dims) > 1 and 'spike_length' not in opts:
                 data['y1'] = element.dimension_values(1)+pos
             else:
                 data['y1'] = data['y0']+self.spike_length
@@ -656,6 +686,8 @@ class BarPlot(ColorbarPlot, LegendPlot):
 
     # Declare that y-range should auto-range if not bounded
     _y_range_type = Range1d
+
+    selection_display = BokehOverlaySelectionDisplay()
 
     def get_extents(self, element, ranges, range_type='combined'):
         """
@@ -767,7 +799,7 @@ class BarPlot(ColorbarPlot, LegendPlot):
 
     def _glyph_properties(self, *args, **kwargs):
         props = super(BarPlot, self)._glyph_properties(*args, **kwargs)
-        return {k: v for k, v in props.items() if k != 'width'}
+        return {k: v for k, v in props.items() if k not in ['width', 'bar_width']}
 
 
     def get_data(self, element, ranges, style):
@@ -902,3 +934,53 @@ class BarPlot(ColorbarPlot, LegendPlot):
                             'right': mapping.pop('top'), 'height': mapping.pop('width')})
 
         return sanitized_data, mapping, style
+
+class SegmentPlot(ColorbarPlot):
+    """
+    Segments are lines in 2D space where each two each dimensions specify a
+    (x, y) node of the line.
+    """
+    style_opts = line_properties + ['cmap']
+
+    _nonvectorized_styles = ['cmap']
+
+    _plot_methods = dict(single='segment')
+
+    def get_data(self, element, ranges, style):
+        # Get [x0, y0, x1, y1]
+        x0idx, y0idx, x1idx, y1idx = (
+            (1, 0, 3, 2) if self.invert_axes else (0, 1, 2, 3)
+        )
+
+        # Compute segments
+        x0s, y0s, x1s, y1s = (
+            element.dimension_values(x0idx),
+            element.dimension_values(y0idx),
+            element.dimension_values(x1idx),
+            element.dimension_values(y1idx)
+        )
+
+        data = {'x0': x0s, 'x1': x1s, 'y0': y0s, 'y1': y1s}
+        mapping = dict(x0='x0', x1='x1', y0='y0', y1='y1')
+        return (data, mapping, style)
+
+    def get_extents(self, element, ranges, range_type='combined'):
+        """
+        Use first two key dimensions to set names, and all four
+        to set the data range.
+        """
+        kdims = element.kdims
+        # loop over start and end points of segments
+        # simultaneously in each dimension
+        for kdim0, kdim1 in zip([kdims[i].name for i in range(2)],
+                                [kdims[i].name for i in range(2,4)]):
+            new_range = {}
+            for kdim in [kdim0, kdim1]:
+                # for good measure, update ranges for both start and end kdim
+                for r in ranges[kdim]:
+                    # combine (x0, x1) and (y0, y1) in range calculation
+                    new_range[r] = max_range([ranges[kd][r]
+                                              for kd in [kdim0, kdim1]])
+            ranges[kdim0] = new_range
+            ranges[kdim1] = new_range
+        return super(SegmentPlot, self).get_extents(element, ranges, range_type)

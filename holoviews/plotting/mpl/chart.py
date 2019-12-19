@@ -83,7 +83,7 @@ class CurvePlot(ChartPlot):
         if isdatetime(xs):
             dimtype = element.get_dimension_type(0)
             dt_format = Dimension.type_formatters.get(dimtype, '%Y-%m-%d %H:%M:%S')
-            dims[0] = dims[0](value_format=DateFormatter(dt_format))
+            dims[0] = dims[0].clone(value_format=DateFormatter(dt_format))
         coords = (ys, xs) if self.invert_axes else (xs, ys)
         return coords, style, {'dimensions': dims}
 
@@ -155,15 +155,11 @@ class ErrorPlot(ColorbarPlot):
         style['fmt'] = 'none'
         dims = element.dimensions()
         xs, ys = (element.dimension_values(i) for i in range(2))
-        yerr = element.array(dimensions=dims[2:4])
+        err = element.array(dimensions=dims[2:4])
 
-        if self.invert_axes:
-            coords = (ys, xs)
-            err_key = 'xerr'
-        else:
-            coords = (xs, ys)
-            err_key = 'yerr'
-        style[err_key] = yerr.T if len(dims) > 3 else yerr[:, 0]
+        err_key = 'xerr' if element.horizontal ^ self.invert_axes else 'yerr'
+        coords = (ys, xs) if self.invert_axes else (xs, ys)
+        style[err_key] = err.T if len(dims) > 3 else err[:, 0]
         return coords, style, {}
 
 
@@ -174,18 +170,18 @@ class ErrorPlot(ColorbarPlot):
 
         _, style, axis_kwargs = self.get_data(element, ranges, style)
         xs, ys, neg_error = (element.dimension_values(i) for i in range(3))
-        samples = len(xs)
-        pos_error = element.dimension_values(3) if len(element.dimensions()) > 3 else neg_error
-        if self.invert_axes:
-            bxs, bys = ys - neg_error, xs
-            txs, tys = ys + pos_error, xs
-            new_arrays = [np.array([[bxs[i], xs[i]], [txs[i], xs[i]]])
-                          for i in range(samples)]
+        pos_idx = 3 if len(element.dimensions()) > 3 else 2
+        pos_error = element.dimension_values(pos_idx)
+        if element.horizontal:
+            bxs, bys = xs - neg_error, ys
+            txs, tys = xs + pos_error, ys
         else:
             bxs, bys = xs, ys - neg_error
             txs, tys = xs, ys + pos_error
-            new_arrays = [np.array([[xs[i], bys[i]], [xs[i], tys[i]]])
-                          for i in range(samples)]
+        if self.invert_axes:
+            bxs, bys = bys, bxs
+            txs, tys = tys, txs
+        new_arrays = np.moveaxis(np.array([[bxs, bys], [txs, tys]]), 2, 0)
         verts.set_paths(new_arrays)
         if bottoms:
             bottoms.set_xdata(bxs)
@@ -334,7 +330,7 @@ class HistogramPlot(ColorbarPlot):
         edges, hvals, widths, lims, is_datetime = self._process_hist(hist)
         if is_datetime and not dims[0].value_format:
             dt_format = Dimension.type_formatters[np.datetime64]
-            dims[0] = dims[0](value_format=DateFormatter(dt_format))
+            dims[0] = dims[0].clone(value_format=DateFormatter(dt_format))
 
         style = self.style[self.cyclic_index]
         if self.invert_axes:
@@ -981,13 +977,25 @@ class SpikesPlot(PathPlot, ColorbarPlot):
         return {'artist': line_segments}
 
     def get_extents(self, element, ranges, range_type='combined'):
+        opts = self.lookup_options(element, 'plot').options
         if len(element.dimensions()) > 1:
             ydim = element.get_dimension(1)
             s0, s1 = ranges[ydim.name]['soft']
             s0 = min(s0, 0) if isfinite(s0) else 0
             s1 = max(s1, 0) if isfinite(s1) else 0
             ranges[ydim.name]['soft'] = (s0, s1)
-        l, b, r, t = super(SpikesPlot, self).get_extents(element, ranges, range_type)
+
+        proxy_dim = None
+        if 'spike_length' in opts:
+            proxy_dim = Dimension('proxy_dim')
+            proxy_range = (self.position, self.position + opts['spike_length'])
+            ranges['proxy_dim'] = {'data':    proxy_range,
+                                  'hard':     (np.nan, np.nan),
+                                  'soft':     (np.nan, np.nan),
+                                  'combined': proxy_range}
+
+        l, b, r, t = super(SpikesPlot, self).get_extents(element, ranges, range_type,
+                                                         ydim=proxy_dim)
         if len(element.dimensions()) == 1 and range_type != 'hard':
             if self.batched:
                 bs, ts = [], []
@@ -1008,9 +1016,10 @@ class SpikesPlot(PathPlot, ColorbarPlot):
     def get_data(self, element, ranges, style):
         dimensions = element.dimensions(label=True)
         ndims = len(dimensions)
+        opts = self.lookup_options(element, 'plot').options
 
         pos = self.position
-        if ndims > 1:
+        if ndims > 1 and 'spike_length' not in opts:
             data = element.columns([0, 1])
             xs, ys = data[dimensions[0]], data[dimensions[1]]
             data = [[(x, pos), (x, pos+y)] for x, y in zip(xs, ys)]
@@ -1035,13 +1044,21 @@ class SpikesPlot(PathPlot, ColorbarPlot):
                         Dimension.type_formatters[np.datetime64]
                     )
                     vs = date2num(vs)
-                    dims[i] = dims[i](value_format=DateFormatter(dt_format))
+                    dims[i] = dims[i].clone(value_format=DateFormatter(dt_format))
                 cols.append(vs)
             clean_spikes.append(np.column_stack(cols))
-    
+
+        if 'spike_length' in opts:
+            axis_dims =  (element.dimensions()[0], None)
+        elif len(element.dimensions()) == 1:
+            axis_dims =  (element.dimensions()[0], None)
+        else:
+            axis_dims =  (element.dimensions()[0], element.dimensions()[1])
+
         with abbreviated_exception():
             style = self._apply_transforms(element, ranges, style)
-        return (clean_spikes,), style, {'dimensions': dims}
+
+        return (clean_spikes,), style, {'dimensions': axis_dims}
 
 
     def update_handles(self, key, axis, element, ranges, style):
@@ -1089,3 +1106,66 @@ class SideSpikesPlot(AdjoinedPlot, SpikesPlot):
         Whether and where to display the yaxis, bare options allow suppressing
         all axis labels including ticks and ylabel. Valid options are 'left',
         'right', 'bare' 'left-bare' and 'right-bare'.""")
+
+
+
+class SegmentPlot(ColorbarPlot):
+    """
+    Segments are lines in 2D space where each two key dimensions specify a
+    (x, y) node of the line.
+    """
+    style_opts = PathPlot.style_opts + ['cmap']
+
+    _nonvectorized_styles = ['cmap']
+
+    _plot_methods = dict(single='segment')
+
+    def init_artists(self, ax, plot_args, plot_kwargs):
+        if 'c' in plot_kwargs:
+            plot_kwargs['array'] = plot_kwargs.pop('c')
+        if 'vmin' in plot_kwargs and 'vmax' in plot_kwargs:
+            plot_kwargs['clim'] = plot_kwargs.pop('vmin'), plot_kwargs.pop('vmax')
+        line_segments = LineCollection(*plot_args, **plot_kwargs)
+        ax.add_collection(line_segments)
+        return {'artist': line_segments}
+
+    def get_data(self, element, ranges, style):
+        # Get [x0, y0, x1, y1]
+        x0idx, y0idx, x1idx, y1idx = (
+            (1, 0, 3, 2) if self.invert_axes else (0, 1, 2, 3)
+        )
+
+        # Compute segments
+        dims = element.dimensions()
+        data = [[(x0, y0), (x1, y1)] for x0, y0, x1, y1
+                in zip(
+                    element.dimension_values(x0idx),
+                    element.dimension_values(y0idx),
+                    element.dimension_values(x1idx),
+                    element.dimension_values(y1idx)
+                )]
+
+        with abbreviated_exception():
+            style = self._apply_transforms(element, ranges, style)
+        return (data,), style, {'dimensions': dims}
+
+    def get_extents(self, element, ranges, range_type='combined'):
+        """
+        Use first two key dimensions to set names, and all four
+        to set the data range.
+        """
+        kdims = element.kdims
+        # loop over start and end points of segments
+        # simultaneously in each dimension
+        for kdim0, kdim1 in zip([kdims[i].name for i in range(2)],
+                                [kdims[i].name for i in range(2,4)]):
+            new_range = {}
+            for kdim in [kdim0, kdim1]:
+                # for good measure, update ranges for both start and end kdim
+                for r in ranges[kdim]:
+                    # combine (x0, x1) and (y0, y1) in range calculation
+                    new_range[r] = max_range([ranges[kd][r]
+                                              for kd in [kdim0, kdim1]])
+            ranges[kdim0] = new_range
+            ranges[kdim1] = new_range
+        return super(SegmentPlot, self).get_extents(element, ranges, range_type)

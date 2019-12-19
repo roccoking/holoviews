@@ -5,7 +5,6 @@ from holoviews.element import Bars
 
 from bokeh.models import CategoricalColorMapper, LinearColorMapper
 
-from ..utils import ParamLogStream
 from .testplot import TestBokehPlot, bokeh_renderer
 
 
@@ -13,12 +12,12 @@ class TestBarPlot(TestBokehPlot):
 
     def test_bars_hover_ensure_kdims_sanitized(self):
         obj = Bars(np.random.rand(10,2), kdims=['Dim with spaces'])
-        obj = obj(plot={'tools': ['hover']})
+        obj = obj.opts(tools=['hover'])
         self._test_hover_info(obj, [('Dim with spaces', '@{Dim_with_spaces}'), ('y', '@{y}')])
 
     def test_bars_hover_ensure_vdims_sanitized(self):
         obj = Bars(np.random.rand(10,2), vdims=['Dim with spaces'])
-        obj = obj(plot={'tools': ['hover']})
+        obj = obj.opts(tools=['hover'])
         self._test_hover_info(obj, [('x', '@{x}'), ('Dim with spaces', '@{Dim_with_spaces}')])
 
     def test_bars_suppress_legend(self):

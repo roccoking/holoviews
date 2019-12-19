@@ -28,7 +28,7 @@ class TestLayoutPlot(TestMPLPlot):
     def test_layout_instantiate_subplots_transposed(self):
         layout = (Curve(range(10)) + Curve(range(10)) + Image(np.random.rand(10,10)) +
                   Curve(range(10)) + Curve(range(10)))
-        plot = mpl_renderer.get_plot(layout(plot=dict(transpose=True)))
+        plot = mpl_renderer.get_plot(layout.opts(transpose=True))
         positions = [(0, 0), (0, 1), (1, 0), (2, 0), (3, 0)]
         self.assertEqual(sorted(plot.subplots.keys()), positions)
         nums = [1, 5, 2, 3, 4]
@@ -47,3 +47,11 @@ class TestLayoutPlot(TestMPLPlot):
         self.assertIn('test: 1', plot.handles['title'].get_text())
         plot.cleanup()
         self.assertEqual(stream._subscribers, [])
+
+    def test_layout_shared_axes_disabled(self):
+        from holoviews.plotting.mpl import CurvePlot
+        layout = (Curve([1, 2, 3]) + Curve([10, 20, 30])).opts(shared_axes=False)
+        plot = mpl_renderer.get_plot(layout)
+        cp1, cp2 = plot.traverse(lambda x: x, [CurvePlot])
+        self.assertTrue(cp1.handles['axis'].get_ylim(), (1, 3))
+        self.assertTrue(cp2.handles['axis'].get_ylim(), (10, 30))

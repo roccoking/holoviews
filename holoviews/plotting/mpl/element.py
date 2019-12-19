@@ -10,12 +10,14 @@ import matplotlib.colors as mpl_colors
 
 from matplotlib import ticker
 from matplotlib.dates import date2num
+from matplotlib.image import AxesImage
 
 from ...core import util
 from ...core import (OrderedDict, NdOverlay, DynamicMap, Dataset,
                      CompositeOverlay, Element3D, Element)
 from ...core.options import abbreviated_exception
 from ...element import Graph, Path
+from ...streams import Stream
 from ...util.transform import dim
 from ..plot import GenericElementPlot, GenericOverlayPlot
 from ..util import dynamic_update, process_cmap, color_intervals, dim_range_key
@@ -268,7 +270,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         Set axis formatter based on dimension formatter.
         """
         if isinstance(dim, list): dim = dim[0]
-        if formatter is not None:
+        if formatter is not None or dim is None:
             pass
         elif dim.value_format:
             formatter = dim.value_format
@@ -511,6 +513,10 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             handles = self.init_artists(ax, plot_data, plot_kwargs)
         self.handles.update(handles)
 
+        trigger = self._trigger
+        self._trigger = []
+        Stream.trigger(trigger)
+
         return self._finalize_axis(self.keys[-1], element=element, ranges=ranges,
                                    **axis_kwargs)
 
@@ -566,7 +572,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                              list(self.overlay_dims))
                 val = v.apply(ds, ranges=ranges, flat=True)[0]
             elif type(element) is Path:
-                val = np.concatenate([v.apply(el, ranges=ranges, flat=True)[:-1]
+                val = np.concatenate([v.apply(el, ranges=ranges, flat=True)
                                       for el in element.split()])
             else:
                 val = v.apply(element, ranges)
@@ -824,7 +830,7 @@ class ColorbarPlot(ElementPlot):
                     isinstance(element, Dataset) and
                     element.interface.multi and
                     (getattr(element, 'level', None) is not None or
-                     element.interface.isscalar(element, vdim.name))
+                    element.interface.isunique(element, vdim.name, True))
                 )
                 values = np.asarray(element.dimension_values(vdim, expanded=expanded))
 
@@ -1054,6 +1060,9 @@ class OverlayPlot(LegendPlot, GenericOverlayPlot):
         for handle, label in zip(all_handles, all_labels):
             # Ensure that artists with multiple handles are supported
             if isinstance(handle, list): handle = tuple(handle)
+            handle = tuple(h for h in handle if not isinstance(h, AxesImage))
+            if not handle:
+                continue
             if handle and (handle not in data) and label and label not in used_labels:
                 data[handle] = label
                 used_labels.append(label)
