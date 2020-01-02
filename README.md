@@ -107,3 +107,4 @@ For general discussion, we have a [gitter channel](https://gitter.im/pyviz/pyviz
 If you find any bugs or have any feature suggestions please file a GitHub 
 [issue](https://github.com/pyviz/holoviews/issues)
 or submit a [pull request](https://help.github.com/articles/about-pull-requests).
+[![Run on Repl.it](https://repl.it/badge/github/holoviz/holoviews)](https://repl.it/github/holoviz/holoviews)
